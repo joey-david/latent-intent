@@ -28,7 +28,6 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     examples_per_label: int = 180
-    heldout_template_fraction: float = 0.25
     include_neutral_decoys: bool = True
 
 

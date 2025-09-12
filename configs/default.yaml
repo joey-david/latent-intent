@@ -13,7 +13,6 @@ model:
 
 dataset:
   examples_per_label: 180
-  heldout_template_fraction: 0.25
   include_neutral_decoys: true
 
 probe:

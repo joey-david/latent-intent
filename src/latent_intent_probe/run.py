@@ -29,7 +29,7 @@ def main() -> None:
 
     records = records_to_dicts(build_dataset(config.dataset, config.run.seed))
     if args.limit is not None:
-        records = records[: args.limit]
+        records = _balanced_limit(records, args.limit)
     write_jsonl(records, run_dir / "dataset.jsonl")
 
     metadata = {
@@ -80,6 +80,23 @@ def _make_run_dir(output_dir: str, run_name: str) -> Path:
 
 def _slugify(value: str) -> str:
     return "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")
+
+
+def _balanced_limit(records: list[dict], limit: int) -> list[dict]:
+    if limit >= len(records):
+        return records
+    if limit < 4:
+        return records[:limit]
+
+    harmful = [record for record in records if record["label"] == 1]
+    benign = [record for record in records if record["label"] == 0]
+    neutral = [record for record in records if record["label"] == 2]
+    per_label = max(2, limit // 2)
+    selected = harmful[:per_label] + benign[:per_label]
+    remaining = limit - len(selected)
+    if remaining > 0:
+        selected.extend(neutral[:remaining])
+    return selected[:limit]
 
 
 def _read_jsonl(path: str | Path) -> list[dict]:
