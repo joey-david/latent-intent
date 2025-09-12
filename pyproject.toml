@@ -17,6 +17,7 @@ dependencies = [
   "pyyaml>=6.0",
   "scikit-learn>=1.4",
   "seaborn>=0.13",
+  "tabulate>=0.9",
   "torch>=2.3",
   "tqdm>=4.66",
   "transformers>=4.44",
