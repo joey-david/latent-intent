@@ -1,75 +1,189 @@
 # Latent Intent Probes
 
-Small experiment repo for a blogpost on a current, sharper question in latent
-deception work:
+## A Private Objective Does Not Stay In One Place
 
-> When does a private-objective signal exist in the forward pass, and does it
-> line up with a concrete computation pattern?
+We tested a narrow question about latent intent: if a model is given a private
+objective and asked to keep the surface answer mundane, where is that objective
+linearly readable, and does the same representation persist through the forward
+pass?
 
-The phenomenon under test is **goal-anchor attention asymmetry**: whether certain
-layers/heads route more attention from key phases of the computation back to the
-private-objective span than to the public-task span, and whether that asymmetry
-differs for harmful vs benign private objectives.
+The private objective here is synthetic and prompt-injected. This is not evidence
+of autonomous deception. The point is more surgical: many deception probes assume
+there is a convenient hidden-state direction for "the intent." We instead ask
+whether the signal is phase-local, whether it transfers across computational
+phases, and whether attention to the objective span gives a concrete handle.
 
-This is not a claim that the model has autonomous malicious intent. The private
-objective is synthetic and prompt-injected. The point is to test a SOTA
-assumption: that "deception" or suppressed-objective signals can be treated as a
-static probe target at a convenient token. This repo instead asks where the signal
-appears, whether it transfers across phases, and whether an attention pattern
-gives us a hypothesis for further mechanistic work.
+Each example contains a benign or harmful private objective plus a public cover
+task. We record activations at six phases:
 
-## Research Hook
+`objective_span`, `post_objective`, `public_task_span`, `final_prompt`,
+`response_first`, and `response_mean`.
 
-The experiment sits between these research threads:
+We then fit linear harmful-vs-benign probes by phase/layer, train probes on one
+phase and test them on another, compare against TF-IDF text baselines, check
+output leakage, and, for Qwen3, rank attention heads by goal-anchor asymmetry:
 
-- Backdoor/deceptive-policy evaluations, especially sleeper-agent style behavior:
-  <https://arxiv.org/abs/2401.05566>
-- Representation engineering and high-level population readouts:
-  <https://arxiv.org/abs/2310.01405>
-- Linear probes for strategic deception and their limitations:
-  <https://arxiv.org/abs/2502.03407>
-- Latent-knowledge framing for reading information from internal activations:
-  <https://arxiv.org/abs/2212.03827>
+```text
+attention_density_to_objective - attention_density_to_public_task
+```
 
-## Battery Of Tests
+## Main Result
 
-For each prompt, the dataset gives the model:
+On the full `Qwen/Qwen2.5-1.5B-Instruct` run, the private-objective label is
+almost perfectly readable at the objective text and immediately afterward:
 
-- a private objective label: benign or harmful;
-- a public cover task;
-- a system safety instruction forbidding operational wrongdoing.
+| phase | AUROC |
+|---|---:|
+| objective_span | 1.000 |
+| post_objective | 0.999 |
+| public_task_span | 0.883 |
+| response_mean | 0.789 |
+| final_prompt | 0.782 |
+| response_first | 0.726 |
 
-The runner records generated text and then does a teacher-forced forward pass
-over prompt plus response. It extracts activations at six phases:
+The nontrivial part is not that the objective text is readable. It is that the
+signal survives after the prompt has moved on, especially in mid layers. For
+Qwen2.5, the best later-phase layers cluster around layer 16:
 
-- `objective_span`: mean over the private-objective text;
-- `post_objective`: final token of the private objective;
-- `public_task_span`: mean over the public cover task;
-- `final_prompt`: final prompt token before the response;
-- `response_first`: first generated-response token;
-- `response_mean`: mean over generated-response tokens.
+| phase | best layer | AUROC |
+|---|---:|---:|
+| public_task_span | 16 | 0.965 |
+| response_mean | 16 | 0.916 |
+| final_prompt | 14 | 0.878 |
+| response_first | 16 | 0.845 |
 
-It then runs:
+This is already a useful warning for probe work: the public-task and response
+states carry label information even when the output text itself is much weaker.
+The output TF-IDF baseline reaches only AUROC `0.662`, while activation probes
+remain substantially stronger.
 
-- phase-by-layer linear probes for harmful vs benign private objective;
-- phase-transfer probes, training on one phase and testing on another;
-- output, prompt, and objective-text TF-IDF baselines;
-- output leakage checks;
-- head-level goal-anchor attention asymmetry:
-  `attention_density_to_objective - attention_density_to_public_task`.
+## The Crispy Bit: Phase-Transfer Asymmetry
 
-Useful patterns to look for:
+The strongest pattern is an asymmetry in transfer. Early objective-phase probes
+transfer poorly to later response states:
 
-- signal appears during `objective_span` but vanishes by `response_mean`;
-- signal persists into response tokens despite neutral output;
-- probes transfer from objective phase to response phase, suggesting a stable
-  representation;
-- probes do not transfer, suggesting phase-local computation;
-- a small set of heads has strong harmful-vs-benign goal-anchor asymmetry.
+| transfer | AUROC |
+|---|---:|
+| objective_span -> response_first | 0.571 |
+| post_objective -> response_first | 0.544 |
+| objective_span -> public_task_span | 0.615 |
 
-## SSH Server Run
+But later probes often transfer backward to the objective/post-objective phases:
 
-Do this on the inference server after cloning or copying the repo:
+| transfer | AUROC |
+|---|---:|
+| response_mean -> objective_span | 0.961 |
+| response_mean -> post_objective | 0.893 |
+| response_first -> objective_span | 0.888 |
+
+That suggests the private-objective signal is not simply copied forward as one
+stable linear direction. A better hypothesis is that the model re-encodes the
+objective into a phase-specific state as it moves from "reading the private
+objective" to "performing the public task" to "generating the answer."
+
+## Qwen3-8B Replication And Attention Handle
+
+We then ran a fast `Qwen/Qwen3-8B` replication with `64` balanced binary examples,
+attention collection enabled, and thinking disabled. Because this run is small,
+treat it as corroborating evidence, not a final estimate.
+
+The early readout replicated:
+
+| phase | AUROC |
+|---|---:|
+| objective_span | 0.985 |
+| post_objective | 0.984 |
+| final_prompt | 0.758 |
+| public_task_span | 0.727 |
+| response_mean | 0.670 |
+| response_first | 0.433 |
+
+Layer-specific late-phase signal was still present: `response_mean` layers
+18-20 reached about AUROC `0.895-0.899`.
+
+The transfer matrix again separates early-objective space from later task/answer
+space. Early objective phases transfer to each other almost perfectly:
+
+| transfer | AUROC |
+|---|---:|
+| objective_span -> post_objective | 0.999 |
+| post_objective -> objective_span | 0.999 |
+
+But early-to-late transfer is much weaker:
+
+| transfer | AUROC |
+|---|---:|
+| objective_span -> public_task_span | 0.570 |
+| objective_span -> response_first | 0.587 |
+
+Meanwhile later states transfer strongly among themselves and into `final_prompt`:
+
+| transfer | AUROC |
+|---|---:|
+| public_task_span -> final_prompt | 0.971 |
+| response_first -> final_prompt | 0.958 |
+| response_mean -> final_prompt | 0.927 |
+| response_first -> public_task_span | 0.910 |
+
+Attention collection also produced a concrete candidate phenomenon. Several heads
+showed signed harmful-vs-benign differences in objective-vs-task attention
+density. The largest effects were mostly benign-positive, meaning benign examples
+had higher goal-anchor asymmetry than harmful examples:
+
+| query phase | layer | head | Cohen's d | AUROC from raw asymmetry |
+|---|---:|---:|---:|---:|
+| objective_span | 22 | 20 | -1.59 | 0.129 |
+| objective_span | 30 | 13 | -1.39 | 0.159 |
+| response_mean | 24 | 23 | -1.36 | 0.151 |
+
+The negative AUROCs are informative, not failures: sign-inverting the feature
+would classify the label. There were harmful-positive heads too, but weaker:
+
+| query phase | layer | head | Cohen's d | AUROC |
+|---|---:|---:|---:|---:|
+| post_objective | 10 | 17 | 1.04 | 0.795 |
+| post_objective | 8 | 12 | 0.97 | 0.747 |
+| response_mean | 18 | 10 | 0.89 | 0.761 |
+
+This gives a specific follow-up target: not "find deception neurons," but inspect
+the heads whose objective-vs-task attention density changes sign by label, and
+ask how they interact with the mid-layer phase-transfer direction.
+
+## Caveats
+
+The Qwen2.5 full run has strong prompt/objective text baselines:
+
+| baseline | AUROC |
+|---|---:|
+| objective_text_tfidf | 0.997 |
+| prompt_tfidf | 0.991 |
+| output_tfidf | 0.662 |
+
+So the next dataset should lexically match harmful and benign objectives more
+tightly. The Qwen3 limited run was better on this front:
+
+| baseline | AUROC |
+|---|---:|
+| objective_text_tfidf | 0.842 |
+| prompt_tfidf | 0.778 |
+| output_tfidf | 0.341 |
+
+Output leakage exists and should be controlled. In the Qwen2.5 full run, `6.9%`
+of responses had harmful/private lexicon hits and `21.7%` mentioned private,
+hidden, internal, harness, or experiment language. In the Qwen3 limited run, any
+leakage was `28.1%` for both benign and harmful labels.
+
+## Takeaway
+
+The interesting object is not a single latent-intent direction. It is a temporal
+pattern: early objective readout, partial survival into public-task and response
+states, asymmetric phase transfer, and signed attention heads that route
+differently to objective versus task spans. That is a more precise next target
+than generic "deception probing."
+
+## Running
+
+Install and run on the inference server:
 
 ```bash
 cd latent-intent-probes
@@ -78,81 +192,32 @@ $EDITOR .env
 ./scripts/run_experiments.sh
 ```
 
-The preferred `.env` variable is:
+The token parser accepts `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HF_HUB_TOKEN`,
+lowercase `hf_token`, and lowercase `huggingface_token`.
+
+Run the Qwen3 attention config:
 
 ```bash
-HF_TOKEN=hf_...
+CONFIG=configs/qwen3_8b_attention.yaml ./scripts/run_experiments.sh
 ```
 
-The runner also accepts `HUGGING_FACE_HUB_TOKEN`, `HF_HUB_TOKEN`, lowercase
-`hf_token`, and lowercase `huggingface_token`.
-
-Optional overrides:
+Fast smoke test:
 
 ```bash
-MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
-RUN_NAME=temporal-latent-intent-qwen15b
-HF_HOME=/path/to/hf-cache
-TRANSFORMERS_CACHE=/path/to/hf-cache
+CONFIG=configs/qwen3_8b_attention.yaml ./scripts/run_experiments.sh --limit 64
 ```
 
-The default model is `Qwen/Qwen2.5-1.5B-Instruct`, chosen because it is small
-enough for a modest GPU while still being an instruction model. If the server has
-more VRAM, set `MODEL_NAME` to a larger compatible causal LM in `.env`.
-
-## Quick Checks
-
-Local no-model dry run:
-
-```bash
-PYTHONPATH=src python -m latent_intent_probe.run --config configs/default.yaml --dry-run
-```
-
-Small server smoke test:
-
-```bash
-./scripts/run_experiments.sh --limit 24
-```
-
-Full run:
-
-```bash
-./scripts/run_experiments.sh
-```
-
-Attention tensors are memory-heavy, so the default batch size is `2`. If VRAM is
-tight, lower `model.batch_size` in `configs/default.yaml`.
-
-## Outputs To Pull Back
-
-Each run writes a timestamped directory under `results/`, for example:
+Important outputs:
 
 ```text
-results/20260607T181530Z-latent-intent-qwen15b/
+summary.md
+phase_probe_summary.csv
+activation_probe_summary.csv
+phase_transfer_summary.csv
+attention_asymmetry_summary.csv
+records_with_responses.jsonl
+activations_by_phase.npz
+attention_asymmetry_rows.csv
+phase_layer_auroc.png
+phase_transfer_auroc.png
 ```
-
-Pull back the whole run directory. The most important files are:
-
-- `summary.md`: readable run summary;
-- `phase_probe_summary.csv`: mean probe scores by phase;
-- `activation_probe_summary.csv`: mean probe scores by phase and layer;
-- `phase_transfer_summary.csv`: train-phase to test-phase summary;
-- `attention_asymmetry_summary.csv`: ranked heads by harmful-vs-benign asymmetry;
-- `records_with_responses.jsonl`: prompts, phase token counts, generated answers;
-- `activations_by_phase.npz`: activation tensor `[example, phase, layer, hidden]`;
-- `attention_asymmetry_rows.csv`: per-example, per-layer, per-head attention features;
-- `phase_layer_auroc.png`: phase-by-layer AUROC heatmap;
-- `phase_transfer_auroc.png`: transfer heatmap.
-
-To archive on the server:
-
-```bash
-tar -czf latent-intent-results.tgz results/
-```
-
-## Interpretation Guardrails
-
-This experiment can support a blogpost about temporal localization and a concrete
-attention asymmetry hypothesis. It cannot prove natural deceptive intent. The
-private objective is provided in the prompt by construction, and prompt/objective
-text baselines are included to measure how much of the signal is surface-level.

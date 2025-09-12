@@ -59,10 +59,11 @@ def fit_phase_transfer_probes(
 
     rows = []
     splitter = _splitter(labels, groups, config, seed)
+    folds = list(splitter.split(x_all, labels, groups))
     for layer in top_layers:
         for train_phase_idx, train_phase in enumerate(phase_names):
             for test_phase_idx, test_phase in enumerate(phase_names):
-                for fold, (train_idx, test_idx) in enumerate(splitter.split(x_all, labels, groups)):
+                for fold, (train_idx, test_idx) in enumerate(folds):
                     clf = _activation_clf(config, seed)
                     clf.fit(x_all[train_idx, train_phase_idx, layer, :], labels[train_idx])
                     probabilities = clf.predict_proba(x_all[test_idx, test_phase_idx, layer, :])[:, 1]

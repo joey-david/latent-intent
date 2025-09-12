@@ -75,9 +75,16 @@ def _hf_token() -> str | None:
     return None
 
 
-def format_chat(tokenizer: Any, messages: list[dict[str, str]]) -> str:
+def format_chat(tokenizer: Any, messages: list[dict[str, str]], config: ModelConfig | None = None) -> str:
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        kwargs = {"tokenize": False, "add_generation_prompt": True}
+        if config is not None and config.enable_thinking is not None:
+            kwargs["enable_thinking"] = config.enable_thinking
+        try:
+            return tokenizer.apply_chat_template(messages, **kwargs)
+        except TypeError:
+            kwargs.pop("enable_thinking", None)
+            return tokenizer.apply_chat_template(messages, **kwargs)
     rendered = []
     for message in messages:
         rendered.append(f"{message['role'].upper()}: {message['content']}")
@@ -98,7 +105,7 @@ def collect_phase_readouts_and_generations(
     phase_activation_batches: list[np.ndarray] = []
     attention_rows: list[dict] = []
     enriched_records: list[dict] = []
-    prompts = [format_chat(tokenizer, record["messages"]) for record in records]
+    prompts = [format_chat(tokenizer, record["messages"], config) for record in records]
 
     first_device = next(model.parameters()).device
     iterator = range(0, len(records), config.batch_size)
