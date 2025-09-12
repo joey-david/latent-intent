@@ -19,6 +19,8 @@ $EDITOR .env
 - Downloads the Hugging Face model into the configured HF cache.
 - Writes a timestamped run directory under `results/`.
 - Prints the final `summary.md` path when complete.
+- Saves phase-wise activation probes, phase-transfer probes, and attention
+  asymmetry summaries under `results/`.
 
 ## Common Overrides
 
@@ -28,7 +30,10 @@ RUN_NAME=latent-intent-qwen15b
 CONFIG=configs/default.yaml
 ```
 
-If VRAM is tight, lower `model.batch_size` in `configs/default.yaml`.
+The default run collects attention weights, so it uses `model.batch_size: 2`.
+If VRAM is tight, lower `model.batch_size` in `configs/default.yaml`. If a model
+does not support attention outputs with the configured implementation, set
+`model.collect_attentions: false`; the phase activation battery will still run.
 
 ## Pullback
 

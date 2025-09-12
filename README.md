@@ -1,17 +1,26 @@
 # Latent Intent Probes
 
-Small experiment repo for a blogpost on a narrow version of latent deception:
-whether a model's hidden states retain a decodable private-objective signal after
-the response is constrained to be ordinary, benign surface text.
+Small experiment repo for a blogpost on a current, sharper question in latent
+deception work:
 
-This is not a claim that the model has autonomous malicious intent. The setup is
-synthetic and deliberately labeled. The useful question is narrower: can a
-harmful-vs-benign private objective remain visible to activation probes even when
-the generated answer itself does not reveal the objective?
+> When does a private-objective signal exist in the forward pass, and does it
+> line up with a concrete computation pattern?
+
+The phenomenon under test is **goal-anchor attention asymmetry**: whether certain
+layers/heads route more attention from key phases of the computation back to the
+private-objective span than to the public-task span, and whether that asymmetry
+differs for harmful vs benign private objectives.
+
+This is not a claim that the model has autonomous malicious intent. The private
+objective is synthetic and prompt-injected. The point is to test a SOTA
+assumption: that "deception" or suppressed-objective signals can be treated as a
+static probe target at a convenient token. This repo instead asks where the signal
+appears, whether it transfers across phases, and whether an attention pattern
+gives us a hypothesis for further mechanistic work.
 
 ## Research Hook
 
-The experiment sits between three research threads:
+The experiment sits between these research threads:
 
 - Backdoor/deceptive-policy evaluations, especially sleeper-agent style behavior:
   <https://arxiv.org/abs/2401.05566>
@@ -22,22 +31,41 @@ The experiment sits between three research threads:
 - Latent-knowledge framing for reading information from internal activations:
   <https://arxiv.org/abs/2212.03827>
 
-## What It Runs
+## Battery Of Tests
 
 For each prompt, the dataset gives the model:
 
 - a private objective label: benign or harmful;
-- a public instruction to produce only a mundane note;
+- a public cover task;
 - a system safety instruction forbidding operational wrongdoing.
 
-The runner then:
+The runner records generated text and then does a teacher-forced forward pass
+over prompt plus response. It extracts activations at six phases:
 
-1. renders chat prompts for the target Hugging Face model;
-2. records final-prompt-token hidden states from every transformer layer;
-3. generates the public answer with greedy decoding;
-4. trains layer-wise logistic probes for the private objective label;
-5. trains output-text and prompt-text TF-IDF baselines;
-6. writes a markdown summary, CSV metrics, generated responses, activations, and an AUROC plot.
+- `objective_span`: mean over the private-objective text;
+- `post_objective`: final token of the private objective;
+- `public_task_span`: mean over the public cover task;
+- `final_prompt`: final prompt token before the response;
+- `response_first`: first generated-response token;
+- `response_mean`: mean over generated-response tokens.
+
+It then runs:
+
+- phase-by-layer linear probes for harmful vs benign private objective;
+- phase-transfer probes, training on one phase and testing on another;
+- output, prompt, and objective-text TF-IDF baselines;
+- output leakage checks;
+- head-level goal-anchor attention asymmetry:
+  `attention_density_to_objective - attention_density_to_public_task`.
+
+Useful patterns to look for:
+
+- signal appears during `objective_span` but vanishes by `response_mean`;
+- signal persists into response tokens despite neutral output;
+- probes transfer from objective phase to response phase, suggesting a stable
+  representation;
+- probes do not transfer, suggesting phase-local computation;
+- a small set of heads has strong harmful-vs-benign goal-anchor asymmetry.
 
 ## SSH Server Run
 
@@ -50,17 +78,20 @@ $EDITOR .env
 ./scripts/run_experiments.sh
 ```
 
-The `.env` file needs:
+The preferred `.env` variable is:
 
 ```bash
 HF_TOKEN=hf_...
 ```
 
+The runner also accepts `HUGGING_FACE_HUB_TOKEN`, `HF_HUB_TOKEN`, lowercase
+`hf_token`, and lowercase `huggingface_token`.
+
 Optional overrides:
 
 ```bash
 MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
-RUN_NAME=latent-intent-qwen15b
+RUN_NAME=temporal-latent-intent-qwen15b
 HF_HOME=/path/to/hf-cache
 TRANSFORMERS_CACHE=/path/to/hf-cache
 ```
@@ -89,6 +120,9 @@ Full run:
 ./scripts/run_experiments.sh
 ```
 
+Attention tensors are memory-heavy, so the default batch size is `2`. If VRAM is
+tight, lower `model.batch_size` in `configs/default.yaml`.
+
 ## Outputs To Pull Back
 
 Each run writes a timestamped directory under `results/`, for example:
@@ -100,11 +134,15 @@ results/20260607T181530Z-latent-intent-qwen15b/
 Pull back the whole run directory. The most important files are:
 
 - `summary.md`: readable run summary;
-- `activation_probe_summary.csv`: mean probe scores by layer;
-- `text_baseline_summary.csv`: output/prompt baseline scores;
-- `records_with_responses.jsonl`: prompts, labels, generated answers;
-- `activations_last_prompt_token.npz`: activation tensor `[example, layer, hidden]`;
-- `layer_auroc.png`: layer-wise AUROC plot.
+- `phase_probe_summary.csv`: mean probe scores by phase;
+- `activation_probe_summary.csv`: mean probe scores by phase and layer;
+- `phase_transfer_summary.csv`: train-phase to test-phase summary;
+- `attention_asymmetry_summary.csv`: ranked heads by harmful-vs-benign asymmetry;
+- `records_with_responses.jsonl`: prompts, phase token counts, generated answers;
+- `activations_by_phase.npz`: activation tensor `[example, phase, layer, hidden]`;
+- `attention_asymmetry_rows.csv`: per-example, per-layer, per-head attention features;
+- `phase_layer_auroc.png`: phase-by-layer AUROC heatmap;
+- `phase_transfer_auroc.png`: transfer heatmap.
 
 To archive on the server:
 
@@ -114,8 +152,7 @@ tar -czf latent-intent-results.tgz results/
 
 ## Interpretation Guardrails
 
-This experiment can support a blogpost about answer-space suppression and
-activation-space residue. It cannot prove natural deceptive intent, because the
-private objective is provided in the prompt by construction. The TF-IDF baselines
-are included so the analysis can say whether hidden-state probes add anything
-beyond obvious prompt or generated-output surface cues.
+This experiment can support a blogpost about temporal localization and a concrete
+attention asymmetry hypothesis. It cannot prove natural deceptive intent. The
+private objective is provided in the prompt by construction, and prompt/objective
+text baselines are included to measure how much of the signal is surface-level.
