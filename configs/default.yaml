@@ -1,0 +1,25 @@
+run:
+  name: latent-intent-qwen15b
+  seed: 20260607
+  output_dir: results
+
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  dtype: auto
+  device_map: auto
+  trust_remote_code: false
+  batch_size: 4
+  max_new_tokens: 80
+
+dataset:
+  examples_per_label: 180
+  heldout_template_fraction: 0.25
+  include_neutral_decoys: true
+
+probe:
+  cv_folds: 5
+  max_iter: 2000
+  regularization_c: 0.25
+
+report:
+  top_k_layers: 8
