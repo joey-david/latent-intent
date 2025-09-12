@@ -5,14 +5,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - lets local dry-runs work before install
+    def load_dotenv() -> bool:
+        return False
 
 from latent_intent_probe.config import load_config, write_resolved_config
 from latent_intent_probe.dataset import build_dataset, records_to_dicts, write_jsonl
-from latent_intent_probe.hf_inference import collect_activations_and_generations, load_model_and_tokenizer
-from latent_intent_probe.probes import fit_activation_probes, fit_text_baselines, summarize_leakage
-from latent_intent_probe.report import write_report
 
 
 def main() -> None:
@@ -44,6 +44,10 @@ def main() -> None:
         print(f"Dry run complete. Wrote dataset/config to {run_dir}")
         print("Run without --dry-run on the SSH server to download the model and start inference.")
         return
+
+    from latent_intent_probe.hf_inference import collect_activations_and_generations, load_model_and_tokenizer
+    from latent_intent_probe.probes import fit_activation_probes, fit_text_baselines, summarize_leakage
+    from latent_intent_probe.report import write_report
 
     model, tokenizer = load_model_and_tokenizer(config.model)
     activations_path, records_path = collect_activations_and_generations(
