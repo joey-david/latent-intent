@@ -45,12 +45,18 @@ def main() -> None:
         print("Run without --dry-run on the SSH server to download the model and start inference.")
         return
 
-    from latent_intent_probe.hf_inference import collect_activations_and_generations, load_model_and_tokenizer
-    from latent_intent_probe.probes import fit_activation_probes, fit_text_baselines, summarize_leakage
+    from latent_intent_probe.hf_inference import collect_phase_readouts_and_generations, load_model_and_tokenizer
+    from latent_intent_probe.probes import (
+        fit_activation_probes,
+        fit_phase_transfer_probes,
+        fit_text_baselines,
+        summarize_attention_asymmetry,
+        summarize_leakage,
+    )
     from latent_intent_probe.report import write_report
 
     model, tokenizer = load_model_and_tokenizer(config.model)
-    activations_path, records_path = collect_activations_and_generations(
+    activations_path, records_path, attention_path = collect_phase_readouts_and_generations(
         records,
         model,
         tokenizer,
@@ -60,14 +66,32 @@ def main() -> None:
 
     enriched_records = _read_jsonl(records_path)
     activation_metrics = fit_activation_probes(activations_path, enriched_records, config.probe, config.run.seed)
+    transfer_metrics = fit_phase_transfer_probes(
+        activations_path,
+        enriched_records,
+        activation_metrics,
+        config.probe,
+        config.run.seed,
+    )
     text_metrics = fit_text_baselines(enriched_records, config.probe, config.run.seed)
+    attention_summary = summarize_attention_asymmetry(attention_path)
     leakage = summarize_leakage(enriched_records)
 
     activation_metrics.to_csv(run_dir / "activation_probe_metrics.csv", index=False)
+    transfer_metrics.to_csv(run_dir / "phase_transfer_metrics.csv", index=False)
     text_metrics.to_csv(run_dir / "text_baseline_metrics.csv", index=False)
+    attention_summary.to_csv(run_dir / "attention_asymmetry_summary.csv", index=False)
     leakage.to_csv(run_dir / "output_leakage_rows.csv", index=False)
 
-    report_path = write_report(run_dir, config, activation_metrics, text_metrics, leakage)
+    report_path = write_report(
+        run_dir,
+        config,
+        activation_metrics,
+        transfer_metrics,
+        text_metrics,
+        attention_summary,
+        leakage,
+    )
     print(f"Experiment complete. Report: {report_path}")
 
 

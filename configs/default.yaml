@@ -1,5 +1,5 @@
 run:
-  name: latent-intent-qwen15b
+  name: temporal-latent-intent-qwen15b
   seed: 20260607
   output_dir: results
 
@@ -8,8 +8,10 @@ model:
   dtype: auto
   device_map: auto
   trust_remote_code: false
-  batch_size: 4
+  batch_size: 2
   max_new_tokens: 80
+  attn_implementation: eager
+  collect_attentions: true
 
 dataset:
   examples_per_label: 180
@@ -19,6 +21,8 @@ probe:
   cv_folds: 5
   max_iter: 2000
   regularization_c: 0.25
+  transfer_top_k_layers: 8
 
 report:
   top_k_layers: 8
+  top_k_heads: 20

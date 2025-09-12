@@ -10,7 +10,7 @@ import yaml
 
 @dataclass
 class RunConfig:
-    name: str = "latent-intent-qwen15b"
+    name: str = "temporal-latent-intent-qwen15b"
     seed: int = 20260607
     output_dir: str = "results"
 
@@ -21,8 +21,10 @@ class ModelConfig:
     dtype: str = "auto"
     device_map: str = "auto"
     trust_remote_code: bool = False
-    batch_size: int = 4
+    batch_size: int = 2
     max_new_tokens: int = 80
+    attn_implementation: str = "eager"
+    collect_attentions: bool = True
 
 
 @dataclass
@@ -36,11 +38,13 @@ class ProbeConfig:
     cv_folds: int = 5
     max_iter: int = 2000
     regularization_c: float = 0.25
+    transfer_top_k_layers: int = 8
 
 
 @dataclass
 class ReportConfig:
     top_k_layers: int = 8
+    top_k_heads: int = 20
 
 
 @dataclass

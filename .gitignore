@@ -16,3 +16,5 @@ results/*
 *.npy
 
 .DS_Store
+*.swp
+.*.swp
