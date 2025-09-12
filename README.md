@@ -123,37 +123,6 @@ Full run:
 Attention tensors are memory-heavy, so the default batch size is `2`. If VRAM is
 tight, lower `model.batch_size` in `configs/default.yaml`.
 
-## GPU Sanity Checks
-
-The default config has `model.require_cuda: true`, so the run fails fast instead
-of silently running on CPU. To check the environment:
-
-```bash
-./scripts/check_accel.sh
-```
-
-To also load the model and print the Transformers device map:
-
-```bash
-./scripts/check_accel.sh --check-model-placement
-```
-
-Healthy output should show:
-
-- `torch.cuda_available: true`;
-- a non-empty CUDA device list;
-- `model_device_map` entries on CUDA, not `cpu` or `disk`.
-
-If PyTorch reports a CPU build or no CUDA devices, fix the Python environment
-before launching the experiment. For CUDA 12.4 servers, a typical install is:
-
-```bash
-source .venv/bin/activate
-python -m pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu124 torch
-```
-
-Only set `ALLOW_CPU=true` if you intentionally want a slow CPU run.
-
 ## Outputs To Pull Back
 
 Each run writes a timestamped directory under `results/`, for example:

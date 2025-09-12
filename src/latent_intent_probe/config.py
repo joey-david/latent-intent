@@ -25,7 +25,6 @@ class ModelConfig:
     max_new_tokens: int = 80
     attn_implementation: str = "eager"
     collect_attentions: bool = False
-    require_cuda: bool = True
 
 
 @dataclass

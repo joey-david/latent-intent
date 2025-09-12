@@ -20,19 +20,10 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml", help="Path to experiment YAML config.")
     parser.add_argument("--dry-run", action="store_true", help="Build dataset and run directory without loading a model.")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on records for quick server smoke tests.")
-    parser.add_argument("--check-accel", action="store_true", help="Print torch/CUDA diagnostics and exit.")
-    parser.add_argument("--check-model-placement", action="store_true", help="Load the model during --check-accel and print its device map.")
     args = parser.parse_args()
 
     load_dotenv()
     config = load_config(args.config)
-
-    if args.check_accel:
-        from latent_intent_probe.diagnostics import print_diagnostics
-
-        print_diagnostics(config, load_model=args.check_model_placement)
-        return
-
     run_dir = _make_run_dir(config.run.output_dir, config.run.name)
     write_resolved_config(config, run_dir / "resolved_config.yaml")
 
@@ -55,7 +46,6 @@ def main() -> None:
         return
 
     from latent_intent_probe.hf_inference import collect_phase_readouts_and_generations, load_model_and_tokenizer
-    from latent_intent_probe.diagnostics import assert_cuda_runtime, validate_model_placement
     from latent_intent_probe.probes import (
         fit_activation_probes,
         fit_phase_transfer_probes,
@@ -65,9 +55,7 @@ def main() -> None:
     )
     from latent_intent_probe.report import write_report
 
-    assert_cuda_runtime(config)
     model, tokenizer = load_model_and_tokenizer(config.model)
-    validate_model_placement(model, config)
     activations_path, records_path, attention_path = collect_phase_readouts_and_generations(
         records,
         model,
