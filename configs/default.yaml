@@ -11,7 +11,8 @@ model:
   batch_size: 2
   max_new_tokens: 80
   attn_implementation: eager
-  collect_attentions: true
+  collect_attentions: false
+  require_cuda: true
 
 dataset:
   examples_per_label: 180

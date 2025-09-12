@@ -24,7 +24,8 @@ class ModelConfig:
     batch_size: int = 2
     max_new_tokens: int = 80
     attn_implementation: str = "eager"
-    collect_attentions: bool = True
+    collect_attentions: bool = False
+    require_cuda: bool = True
 
 
 @dataclass
