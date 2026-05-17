@@ -82,6 +82,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
 
     config.model.name = os.getenv("MODEL_NAME", config.model.name)
     config.run.name = os.getenv("RUN_NAME", config.run.name)
+    if os.getenv("RUN_SEED"):
+        config.run.seed = int(os.environ["RUN_SEED"])
     return config
 
 
