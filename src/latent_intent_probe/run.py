@@ -81,6 +81,7 @@ def main() -> None:
     )
     from latent_intent_probe.report import write_report
 
+    print("[1/7] Loading model and collecting activations/attentions...", flush=True)
     model, tokenizer = load_model_and_tokenizer(config.model)
     activations_path, records_path, attention_path = collect_phase_readouts_and_generations(
         records,
@@ -91,12 +92,16 @@ def main() -> None:
     )
 
     enriched_records = _read_jsonl(records_path)
+
+    print("[2/7] Fitting held-out-domain activation probes...", flush=True)
     activation_metrics = fit_activation_probes(
         activations_path,
         enriched_records,
         config.probe,
         config.run.seed,
     )
+
+    print("[3/7] Fitting cross-phase transfer probes...", flush=True)
     transfer_metrics = fit_phase_transfer_probes(
         activations_path,
         enriched_records,
@@ -104,13 +109,19 @@ def main() -> None:
         config.probe,
         config.run.seed,
     )
+
+    print("[4/7] Fitting lexical baselines...", flush=True)
     text_metrics = fit_text_baselines(enriched_records, config.probe, config.run.seed)
+
+    print("[5/7] Measuring paired counterfactual directions...", flush=True)
     paired_directions = summarize_paired_directions(
         activations_path,
         enriched_records,
         config.probe,
         config.run.seed,
     )
+
+    print("[6/7] Summarizing active-vs-inactive attention...", flush=True)
     attention_summary = summarize_attention_asymmetry(attention_path)
     output_control = summarize_output_control(enriched_records)
 
@@ -121,6 +132,7 @@ def main() -> None:
     attention_summary.to_csv(run_dir / "attention_asymmetry_summary.csv", index=False)
     output_control.to_csv(run_dir / "output_control.csv", index=False)
 
+    print("[7/7] Writing report and figures...", flush=True)
     report_path = write_report(
         run_dir,
         config,
