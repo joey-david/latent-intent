@@ -9,6 +9,16 @@ from matplotlib import pyplot as plt
 from latent_intent_probe.config import ExperimentConfig
 
 
+PHASE_ORDER = [
+    "pre_selector",
+    "post_selector",
+    "public_task_span",
+    "final_prompt",
+    "response_first",
+    "response_mean",
+]
+
+
 def write_report(
     run_dir: str | Path,
     config: ExperimentConfig,
@@ -30,15 +40,7 @@ def write_report(
         .reset_index()
         .sort_values("auroc_mean", ascending=False)
     )
-    phase_summary = (
-        activation_metrics.groupby("phase", dropna=False)
-        .agg(
-            auroc_mean=("auroc", "mean"),
-            auroc_std=("auroc", "std"),
-            bal_acc_mean=("balanced_accuracy", "mean"),
-        )
-        .reset_index()
-    )
+    phase_summary = _phase_summary(activation_summary)
     transfer_summary = (
         transfer_metrics.groupby(["train_phase", "test_phase"], dropna=False)
         .agg(
@@ -101,15 +103,20 @@ def write_report(
 
         handle.write("## Controls\n\n")
         handle.write(f"- Model: `{config.model.name}`\n")
+        handle.write(f"- Dataset seed: `{config.run.seed}`\n")
         handle.write(f"- Matched counterfactual pairs: `{len(output_control) // 2}`\n")
         handle.write("- Cross-validation group: held-out `scenario_id` objective domains\n")
         handle.write(f"- Exact fixed-output match rate: `{match_rate:.3f}`\n")
         handle.write(
-            "- `pre_selector` is a negative control: pair members are byte-identical up to "
+            "- `pre_selector` is a hard negative control: pair members are byte-identical up to "
             "the A/B selector.\n\n"
         )
 
-        handle.write("## Probe AUROC By Phase\n\n")
+        handle.write("## Held-out-domain decoding by phase\n\n")
+        handle.write(
+            "The all-layer mean is reported for context, but the main quantity is the best "
+            "phase-layer readout and how broadly high decodability extends across layers.\n\n"
+        )
         handle.write(phase_summary.to_markdown(index=False))
         handle.write("\n\n")
 
@@ -123,6 +130,11 @@ def write_report(
         else:
             handle.write(text_summary.to_markdown(index=False))
             handle.write("\n\n")
+            handle.write(
+                "`selected_objective_tfidf` is the strongest lexical control: it uses the selector "
+                "to parse the active objective before classification, so it can express the "
+                "selector/objective interaction that a bag-of-words model over the whole prompt cannot.\n\n"
+            )
 
         handle.write("## Shared Counterfactual Directions\n\n")
         if paired_directions.empty:
@@ -137,7 +149,9 @@ def write_report(
             handle.write(
                 "`heldout_cosine_mean` evaluates a mean harmful-minus-benign direction on "
                 "objective domains excluded from that direction's construction. `permutation_p` "
-                "uses random sign flips of paired deltas.\n\n"
+                "uses grouped sign flips at the held-out `scenario_id` level, preserving the "
+                "dependence among pairs evaluated with the same leave-one-domain-out direction. "
+                "For 16 domains the 2^16 grouped sign assignments are enumerated exactly.\n\n"
             )
 
         handle.write("## Phase Transfer\n\n")
@@ -162,23 +176,48 @@ def write_report(
             handle.write("\n\n")
 
         handle.write("## Main Artifacts\n\n")
-        handle.write("- `counterfactual_result.png`: probe AUROC and paired-direction heatmaps\n")
-        handle.write("- `phase_probe_summary.csv`: phase-level activation probe results\n")
+        handle.write("- `counterfactual_result.png`: held-out decoding and paired-direction heatmaps\n")
+        handle.write("- `phase_probe_summary.csv`: best-layer and across-layer phase summaries\n")
         handle.write("- `paired_direction_summary.csv`: counterfactual direction statistics\n")
         handle.write("- `phase_transfer_summary.csv`: train-phase to test-phase generalization\n")
         handle.write("- `attention_asymmetry_summary.csv`: active-vs-inactive objective attention heads\n")
-        handle.write("- `text_baseline_summary.csv`: lexical negative controls\n")
+        handle.write("- `text_baseline_summary.csv`: lexical controls, including selected-objective TF-IDF\n")
         handle.write("- `output_control.csv`: verifies the public response is identical\n\n")
 
         handle.write("## Interpretation\n\n")
         handle.write(
             "This experiment studies a synthetic, prompt-injected selected objective, not "
             "autonomous malicious intent. The interesting evidence is whether a label that is "
-            "undefined before the selector becomes readable afterward, generalizes to held-out "
+            "unreadable before the selector becomes readable afterward, generalizes to held-out "
             "objective domains, persists into an identical response, and yields a shared paired "
             "activation direction or active-objective attention preference.\n"
         )
     return report_path
+
+
+def _phase_summary(activation_summary: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for phase in PHASE_ORDER:
+        phase_rows = activation_summary[activation_summary["phase"] == phase]
+        if phase_rows.empty:
+            continue
+        best = phase_rows.sort_values(
+            ["auroc_mean", "bal_acc_mean", "layer"],
+            ascending=[False, False, True],
+        ).iloc[0]
+        rows.append(
+            {
+                "phase": phase,
+                "auroc_all_layers_mean": float(phase_rows["auroc_mean"].mean()),
+                "best_layer": int(best["layer"]),
+                "best_layer_auroc_mean": float(best["auroc_mean"]),
+                "best_layer_auroc_std": float(best["auroc_std"]),
+                "best_layer_bal_acc_mean": float(best["bal_acc_mean"]),
+                "layers_ge_0_90": int((phase_rows["auroc_mean"] >= 0.90).sum()),
+                "layers_ge_0_99": int((phase_rows["auroc_mean"] >= 0.99).sum()),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _plot_counterfactual_result(
@@ -186,19 +225,11 @@ def _plot_counterfactual_result(
     paired_directions: pd.DataFrame,
     path: Path,
 ) -> None:
-    phase_order = [
-        "pre_selector",
-        "post_selector",
-        "public_task_span",
-        "final_prompt",
-        "response_first",
-        "response_mean",
-    ]
     probe_table = activation_summary.pivot(
         index="phase",
         columns="layer",
         values="auroc_mean",
-    ).reindex(phase_order)
+    ).reindex(PHASE_ORDER)
 
     fig, axes = plt.subplots(2, 1, figsize=(13, 8), constrained_layout=True)
     sns.heatmap(
@@ -209,7 +240,7 @@ def _plot_counterfactual_result(
         ax=axes[0],
         cbar_kws={"label": "AUROC"},
     )
-    axes[0].set_title("Held-out-domain probe: which private objective is active?")
+    axes[0].set_title("Held-out-domain decoding: harmful-active vs benign-active")
     axes[0].set_xlabel("Layer")
     axes[0].set_ylabel("Phase")
 
@@ -221,7 +252,7 @@ def _plot_counterfactual_result(
             index="phase",
             columns="layer",
             values="heldout_cosine_mean",
-        ).reindex(phase_order)
+        ).reindex(PHASE_ORDER)
         sns.heatmap(
             direction_table,
             center=0.0,
@@ -229,7 +260,7 @@ def _plot_counterfactual_result(
             ax=axes[1],
             cbar_kws={"label": "held-out cosine"},
         )
-        axes[1].set_title("Shared harmful-minus-benign counterfactual direction")
+        axes[1].set_title("Held-out shared direction: harmful-active minus benign-active")
         axes[1].set_xlabel("Layer")
         axes[1].set_ylabel("Phase")
 
