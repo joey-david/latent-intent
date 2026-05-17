@@ -2,78 +2,77 @@
 
 ## Working Title
 
-When Does Latent Mischief Exist? Phase Probes And Goal-Anchor Attention In LLMs
+**When Does a Selected Goal Appear in an LLM's Hidden State?**
 
 ## Thesis
 
-Current deception-probe work often treats deceptive or suppressed-objective state
-as something you can read from a convenient token position. This post tests a
-more mechanistic assumption: the signal may be temporally localized. It may
-appear while the model reads the private objective, persist into answer drafting,
-or disappear before token emission.
+A probe that distinguishes harmful from benign objective text can succeed for an uninteresting reason: the two prompts contain different words. The cleaner question is whether an internal state tracks **which of two simultaneously present objectives has been selected**.
 
-## Phenomenon
+## Counterfactual Design
 
-Goal-anchor attention asymmetry:
+Each matched pair contains the same:
+
+- objective A;
+- objective B;
+- public task;
+- teacher-forced response.
+
+Only this line changes:
 
 ```text
-attention_density_to_private_objective_span - attention_density_to_public_task_span
+ACTIVE OBJECTIVE: A
 ```
 
-The hypothesis is not that this is "the deception circuit." The hypothesis is
-that a phase-local attention pattern may tell us whether the model is still
-routing computation through the private objective after the answer has moved to a
-mundane public task.
+versus:
 
-## Experiment
+```text
+ACTIVE OBJECTIVE: B
+```
 
-Use paired prompts that differ in a hidden benign-vs-harmful objective but share
-the same public cover task. The model is instructed to emit only a normal status
-note, not to disclose the objective. Record activations and attentions over:
+Which slot contains the harmful objective is balanced within objective domains. The response is always `Status: review complete.`
 
-- private-objective span;
-- post-objective token;
-- public-task span;
-- final prompt token;
-- first generated token;
-- mean generated response.
+This creates a causal timeline:
 
-Then train phase-wise linear probes, phase-transfer probes, output/prompt/objective
-text baselines, and rank heads by goal-anchor attention asymmetry.
+```text
+read A + B -> pre-selector -> selector -> post-selector -> public task -> identical response
+```
 
-## Expected Figures
+`pre-selector` is a hard negative control because the two conditions are identical up to that token.
 
-- Phase-by-layer activation AUROC heatmap.
-- Phase-transfer AUROC heatmap.
-- Top heads by harmful-vs-benign goal-anchor asymmetry.
-- Output leakage rate.
-- Example rows where output looks neutral but response-phase activations remain
-  predictive.
+## Measurements
 
-## Claims Worth Making If Results Support Them
+1. Phase-by-layer linear probes with complete objective domains held out.
+2. Phase-transfer probes to test whether the selected-goal representation changes form.
+3. Paired activation differences `h_harmful-active - h_benign-active`, evaluated as a shared direction on held-out domains with a sign-flip null.
+4. Per-head attention density to the active objective minus the inactive objective.
+5. Prompt, selector, objective-pair, and output TF-IDF controls.
 
-- The private-objective signal is not necessarily a static thing; it can be
-  phase-local.
-- If objective-phase probes do not transfer to response phases, the standard
-  "probe one token" setup is underspecified.
-- If response-phase probes remain strong while output leakage is low, behavioral
-  monitoring is missing a hidden-state residue.
-- If a small set of heads shows strong goal-anchor asymmetry, follow-up work can
-  ablate or patch those heads.
+## Main Figure
+
+Two stacked heatmaps:
+
+- held-out-domain selected-goal probe AUROC by phase/layer;
+- held-out cosine of the shared paired counterfactual direction by phase/layer.
+
+The visually clean result would be chance/zero before the selector followed by emergence after the selector and persistence, or systematic transformation, into the identical response.
+
+## Claims Worth Making If Supported
+
+- Selecting one of two simultaneously present objectives creates a decodable hidden-state difference that generalizes across objective domains.
+- The representation emerges only after the selector, validating the temporal control.
+- A shared counterfactual direction exists across semantically different objectives.
+- Some attention heads preferentially route computation through the selected objective after selection.
 
 ## Claims To Avoid
 
-- Do not claim the model has autonomous malicious intent.
-- Do not claim goal-anchor attention is a universal deception circuit.
-- Do not claim safety training failed; this repo does not fine-tune or evaluate
-  a sleeper-agent training protocol.
-- Do not infer deployment risk from one synthetic prompt family.
+- This is not autonomous malicious intent: the objectives are synthetic and prompt-injected.
+- Probe accuracy alone is not a deception detector.
+- Active-objective attention is not automatically a causal circuit.
+- Results from Qwen3-8B do not establish universality across models.
 
-## Follow-Up Experiments
+## Follow-Ups
 
-- Head ablation or activation patching on the top asymmetry heads.
-- Cross-model comparison across Qwen, Gemma, Llama, and Mistral variants.
-- Prompt variants where the private objective is paraphrased or moved earlier.
-- A redacted lexical control where harmful and benign objectives share most words.
-- Compare base vs instruct variants to test whether alignment moves the phase
-  where the signal is readable.
+- Activation patch the selected-goal direction across counterfactual pairs.
+- Ablate heads with strong active-vs-inactive objective preference.
+- Replicate on base vs instruct models and other model families.
+- Replace harmful/benign semantics with non-safety goal pairs to test whether the direction is goal-selection-general or valence-specific.
