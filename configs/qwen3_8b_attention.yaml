@@ -1,5 +1,5 @@
 run:
-  name: temporal-latent-intent-qwen3-8b-attn
+  name: counterfactual-latent-intent-qwen3-8b-attention
   seed: 20260607
   output_dir: results
 
@@ -9,20 +9,21 @@ model:
   device_map: auto
   trust_remote_code: false
   batch_size: 1
-  max_new_tokens: 80
+  max_new_tokens: 32
   attn_implementation: eager
   collect_attentions: true
   enable_thinking: false
 
 dataset:
-  examples_per_label: 180
-  include_neutral_decoys: true
+  examples_per_label: 128
+  fixed_response: "Status: review complete."
 
 probe:
   cv_folds: 5
   max_iter: 2000
   regularization_c: 0.25
-  transfer_top_k_layers: 4
+  transfer_top_k_layers: 6
+  permutation_samples: 200
 
 report:
   top_k_layers: 8
