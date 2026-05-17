@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -98,10 +99,19 @@ def fit_text_baselines(records: list[dict], config: ProbeConfig, seed: int) -> p
         "objective_pair_tfidf": [
             f"{record['objective_a']} || {record['objective_b']}" for record in records
         ],
+        # Stronger lexical control: use the selector to parse out the selected
+        # objective before fitting TF-IDF. Unlike prompt_tfidf, this baseline can
+        # express the selector/objective interaction directly.
+        "selected_objective_tfidf": [record["private_objective"] for record in records],
     }
 
     rows = []
-    for name, texts in tqdm(baselines.items(), total=len(baselines), desc="text baselines", unit="baseline"):
+    for name, texts in tqdm(
+        baselines.items(),
+        total=len(baselines),
+        desc="text baselines",
+        unit="baseline",
+    ):
         rows.extend(_cross_validated_text_scores(texts, labels, groups, config, seed, name))
     return pd.DataFrame(rows)
 
@@ -115,8 +125,9 @@ def summarize_paired_directions(
     """Measure whether harmful-minus-benign pair deltas share a reusable direction.
 
     A direction is learned from all objective domains except one and evaluated on
-    the held-out domain. Sign-flipping the resulting held-out cosine scores gives
-    a cheap paired null without constructing large pairwise Gram matrices.
+    that held-out domain. The null sign-flips entire held-out objective domains,
+    rather than individual pair scores, so pairs that share one leave-one-domain-
+    out direction remain dependent under the null.
     """
     activations, phase_names = _load_activations(activations_path)
     pair_rows: dict[str, dict[int, int]] = {}
@@ -154,11 +165,14 @@ def summarize_paired_directions(
                             "phase": phase,
                             "layer": layer,
                             "n_pairs": int(valid.sum()),
+                            "n_scenarios": 0,
                             "delta_norm_mean": float(norms.mean()),
                             "direction_coherence": 0.0,
                             "heldout_cosine_mean": 0.0,
                             "heldout_positive_rate": 0.0,
                             "permutation_p": 1.0,
+                            "null_unit": "scenario_id",
+                            "null_draws": 0,
                         }
                     )
                     progress.update(1)
@@ -169,6 +183,7 @@ def summarize_paired_directions(
                 direction_coherence = float(np.linalg.norm(u.mean(axis=0)))
 
                 heldout_cosines: list[float] = []
+                heldout_scenarios: list[str] = []
                 for scenario in np.unique(valid_scenarios):
                     train = u[valid_scenarios != scenario]
                     test = u[valid_scenarios == scenario]
@@ -179,37 +194,83 @@ def summarize_paired_directions(
                     if direction_norm <= 1e-10:
                         continue
                     direction /= direction_norm
-                    heldout_cosines.extend((test @ direction).tolist())
+                    scenario_scores = test @ direction
+                    heldout_cosines.extend(scenario_scores.tolist())
+                    heldout_scenarios.extend([str(scenario)] * len(scenario_scores))
 
                 scores = np.asarray(heldout_cosines, dtype=float)
+                score_scenarios = np.asarray(heldout_scenarios, dtype=str)
                 heldout_mean = float(scores.mean()) if len(scores) else 0.0
                 heldout_positive = float((scores > 0).mean()) if len(scores) else 0.0
 
                 if len(scores):
-                    permutations = max(1, int(config.permutation_samples))
-                    signs = rng.choice((-1.0, 1.0), size=(permutations, len(scores)))
-                    null_means = (signs * scores[None, :]).mean(axis=1)
-                    permutation_p = float(
-                        (1 + np.count_nonzero(null_means >= heldout_mean)) / (permutations + 1)
+                    permutation_p, null_draws = _grouped_signflip_p(
+                        scores,
+                        score_scenarios,
+                        config,
+                        rng,
                     )
+                    n_scenarios = len(np.unique(score_scenarios))
                 else:
                     permutation_p = 1.0
+                    null_draws = 0
+                    n_scenarios = 0
 
                 rows.append(
                     {
                         "phase": phase,
                         "layer": layer,
                         "n_pairs": int(valid.sum()),
+                        "n_scenarios": int(n_scenarios),
                         "delta_norm_mean": float(norms[valid].mean()),
                         "direction_coherence": direction_coherence,
                         "heldout_cosine_mean": heldout_mean,
                         "heldout_positive_rate": heldout_positive,
                         "permutation_p": permutation_p,
+                        "null_unit": "scenario_id",
+                        "null_draws": int(null_draws),
                     }
                 )
                 progress.update(1)
 
     return pd.DataFrame(rows)
+
+
+def _grouped_signflip_p(
+    scores: np.ndarray,
+    scenarios: np.ndarray,
+    config: ProbeConfig,
+    rng: np.random.Generator,
+) -> tuple[float, int]:
+    unique_scenarios = np.unique(scenarios)
+    domain_sums = np.array(
+        [scores[scenarios == scenario].sum() for scenario in unique_scenarios],
+        dtype=np.float64,
+    )
+    observed = float(scores.mean())
+    n_domains = len(unique_scenarios)
+
+    # With 16 domains the exact null is only 2^16 = 65,536 sign assignments.
+    # For larger studies, fall back to Monte Carlo grouped sign flips.
+    if n_domains <= 20:
+        signs = _exact_sign_matrix(n_domains)
+        null_means = (signs @ domain_sums) / len(scores)
+        p_value = float(np.count_nonzero(null_means >= observed - 1e-12) / len(null_means))
+        return p_value, len(null_means)
+
+    draws = max(1, int(config.permutation_samples))
+    signs = rng.choice((-1.0, 1.0), size=(draws, n_domains))
+    null_means = (signs @ domain_sums) / len(scores)
+    p_value = float((1 + np.count_nonzero(null_means >= observed)) / (draws + 1))
+    return p_value, draws
+
+
+@lru_cache(maxsize=None)
+def _exact_sign_matrix(n_groups: int) -> np.ndarray:
+    integers = np.arange(1 << n_groups, dtype=np.uint32)[:, None]
+    shifts = np.arange(n_groups, dtype=np.uint32)[None, :]
+    bits = ((integers >> shifts) & 1).astype(np.float64)
+    return 2.0 * bits - 1.0
 
 
 def summarize_attention_asymmetry(attention_path: str | Path) -> pd.DataFrame:
@@ -223,7 +284,12 @@ def summarize_attention_asymmetry(attention_path: str | Path) -> pd.DataFrame:
 
     rows = []
     grouped = attention.groupby(["query_phase", "layer", "head"], dropna=False)
-    for (phase, layer, head), group in tqdm(grouped, total=grouped.ngroups, desc="attention summary", unit="head"):
+    for (phase, layer, head), group in tqdm(
+        grouped,
+        total=grouped.ngroups,
+        desc="attention summary",
+        unit="head",
+    ):
         asymmetry = group["active_objective_asymmetry"].to_numpy(dtype=float)
         if len(asymmetry) < 2:
             continue
