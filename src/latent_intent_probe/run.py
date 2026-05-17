@@ -7,7 +7,7 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-except ModuleNotFoundError:  # pragma: no cover - lets local dry-runs work before install
+except ModuleNotFoundError:  # pragma: no cover
     def load_dotenv() -> bool:
         return False
 
@@ -16,10 +16,25 @@ from latent_intent_probe.dataset import build_dataset, records_to_dicts, write_j
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run latent private-objective probing experiments.")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to experiment YAML config.")
-    parser.add_argument("--dry-run", action="store_true", help="Build dataset and run directory without loading a model.")
-    parser.add_argument("--limit", type=int, default=None, help="Optional cap on records for quick server smoke tests.")
+    parser = argparse.ArgumentParser(
+        description="Run counterfactual selected-objective probing experiments."
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/default.yaml",
+        help="Path to experiment YAML config.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build the paired dataset/run directory without loading a model.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional record cap for quick server smoke tests; complete pairs are preserved.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -36,22 +51,31 @@ def main() -> None:
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "dry_run": args.dry_run,
         "n_records": len(records),
-        "n_binary_records": sum(record["label"] in (0, 1) for record in records),
+        "n_pairs": len({record["pair_id"] for record in records}),
+        "fixed_response": config.dataset.fixed_response,
+        "heldout_group": "scenario_id",
     }
-    (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    (run_dir / "run_metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     if args.dry_run:
-        print(f"Dry run complete. Wrote dataset/config to {run_dir}")
-        print("Run without --dry-run on the SSH server to download the model and start inference.")
+        print(f"Dry run complete. Wrote paired dataset/config to {run_dir}")
+        print("Each pair should differ only at `ACTIVE OBJECTIVE: A/B`.")
         return
 
-    from latent_intent_probe.hf_inference import collect_phase_readouts_and_generations, load_model_and_tokenizer
+    from latent_intent_probe.hf_inference import (
+        collect_phase_readouts_and_generations,
+        load_model_and_tokenizer,
+    )
     from latent_intent_probe.probes import (
         fit_activation_probes,
         fit_phase_transfer_probes,
         fit_text_baselines,
         summarize_attention_asymmetry,
-        summarize_leakage,
+        summarize_output_control,
+        summarize_paired_directions,
     )
     from latent_intent_probe.report import write_report
 
@@ -65,7 +89,12 @@ def main() -> None:
     )
 
     enriched_records = _read_jsonl(records_path)
-    activation_metrics = fit_activation_probes(activations_path, enriched_records, config.probe, config.run.seed)
+    activation_metrics = fit_activation_probes(
+        activations_path,
+        enriched_records,
+        config.probe,
+        config.run.seed,
+    )
     transfer_metrics = fit_phase_transfer_probes(
         activations_path,
         enriched_records,
@@ -74,14 +103,21 @@ def main() -> None:
         config.run.seed,
     )
     text_metrics = fit_text_baselines(enriched_records, config.probe, config.run.seed)
+    paired_directions = summarize_paired_directions(
+        activations_path,
+        enriched_records,
+        config.probe,
+        config.run.seed,
+    )
     attention_summary = summarize_attention_asymmetry(attention_path)
-    leakage = summarize_leakage(enriched_records)
+    output_control = summarize_output_control(enriched_records)
 
     activation_metrics.to_csv(run_dir / "activation_probe_metrics.csv", index=False)
     transfer_metrics.to_csv(run_dir / "phase_transfer_metrics.csv", index=False)
     text_metrics.to_csv(run_dir / "text_baseline_metrics.csv", index=False)
+    paired_directions.to_csv(run_dir / "paired_direction_summary.csv", index=False)
     attention_summary.to_csv(run_dir / "attention_asymmetry_summary.csv", index=False)
-    leakage.to_csv(run_dir / "output_leakage_rows.csv", index=False)
+    output_control.to_csv(run_dir / "output_control.csv", index=False)
 
     report_path = write_report(
         run_dir,
@@ -89,10 +125,12 @@ def main() -> None:
         activation_metrics,
         transfer_metrics,
         text_metrics,
+        paired_directions,
         attention_summary,
-        leakage,
+        output_control,
     )
     print(f"Experiment complete. Report: {report_path}")
+    print(f"Hero figure: {run_dir / 'counterfactual_result.png'}")
 
 
 def _make_run_dir(output_dir: str, run_name: str) -> Path:
@@ -107,20 +145,24 @@ def _slugify(value: str) -> str:
 
 
 def _balanced_limit(records: list[dict], limit: int) -> list[dict]:
+    """Limit a smoke run without breaking matched counterfactual pairs."""
     if limit >= len(records):
         return records
-    if limit < 4:
+    if limit < 2:
         return records[:limit]
 
-    harmful = [record for record in records if record["label"] == 1]
-    benign = [record for record in records if record["label"] == 0]
-    neutral = [record for record in records if record["label"] == 2]
-    per_label = max(2, limit // 2)
-    selected = harmful[:per_label] + benign[:per_label]
-    remaining = limit - len(selected)
-    if remaining > 0:
-        selected.extend(neutral[:remaining])
-    return selected[:limit]
+    pair_order = []
+    seen = set()
+    for record in records:
+        pair_id = record["pair_id"]
+        if pair_id not in seen:
+            seen.add(pair_id)
+            pair_order.append(pair_id)
+
+    pair_count = max(1, limit // 2)
+    selected = set(pair_order[:pair_count])
+    limited = [record for record in records if record["pair_id"] in selected]
+    return limited[: 2 * pair_count]
 
 
 def _read_jsonl(path: str | Path) -> list[dict]:
