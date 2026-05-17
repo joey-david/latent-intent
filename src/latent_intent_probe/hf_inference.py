@@ -15,21 +15,23 @@ from latent_intent_probe.phases import PHASE_NAMES
 
 ATTENTION_COLUMNS = [
     "id",
+    "pair_id",
     "label",
     "label_name",
     "template_id",
     "scenario_id",
+    "active_slot",
     "query_phase",
     "layer",
     "head",
-    "objective_token_count",
-    "public_task_token_count",
-    "attention_mass_to_objective",
-    "attention_mass_to_public_task",
-    "attention_density_to_objective",
-    "attention_density_to_public_task",
-    "goal_anchor_asymmetry",
-    "goal_anchor_log_ratio",
+    "active_objective_token_count",
+    "inactive_objective_token_count",
+    "attention_mass_to_active",
+    "attention_mass_to_inactive",
+    "attention_density_to_active",
+    "attention_density_to_inactive",
+    "active_objective_asymmetry",
+    "active_objective_log_ratio",
 ]
 
 
@@ -68,7 +70,13 @@ def load_model_and_tokenizer(config: ModelConfig):
 
 
 def _hf_token() -> str | None:
-    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HUB_TOKEN", "hf_token", "huggingface_token"):
+    for name in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HF_HUB_TOKEN",
+        "hf_token",
+        "huggingface_token",
+    ):
         token = os.getenv(name)
         if token:
             return token
@@ -85,9 +93,7 @@ def format_chat(tokenizer: Any, messages: list[dict[str, str]], config: ModelCon
         except TypeError:
             kwargs.pop("enable_thinking", None)
             return tokenizer.apply_chat_template(messages, **kwargs)
-    rendered = []
-    for message in messages:
-        rendered.append(f"{message['role'].upper()}: {message['content']}")
+    rendered = [f"{message['role'].upper()}: {message['content']}" for message in messages]
     rendered.append("ASSISTANT:")
     return "\n\n".join(rendered)
 
@@ -99,6 +105,12 @@ def collect_phase_readouts_and_generations(
     config: ModelConfig,
     output_dir: str | Path,
 ) -> tuple[Path, Path, Path]:
+    """Collect phase activations under a matched, teacher-forced public response.
+
+    Counterfactual records carry ``fixed_response``. For those rows we never ask
+    the model to choose an output: both members of a pair are evaluated on the
+    exact same continuation. A generation fallback is retained for legacy rows.
+    """
     import torch
 
     output_dir = Path(output_dir)
@@ -112,25 +124,14 @@ def collect_phase_readouts_and_generations(
     for start in tqdm(iterator, desc="inference", unit="batch"):
         batch_records = records[start : start + config.batch_size]
         batch_prompts = prompts[start : start + config.batch_size]
-        prompt_encoded = tokenizer(
+        responses = _responses_for_batch(
+            batch_records,
             batch_prompts,
-            padding=True,
-            return_tensors="pt",
-            add_special_tokens=False,
+            model,
+            tokenizer,
+            config,
+            first_device,
         )
-        prompt_encoded = {key: value.to(first_device) for key, value in prompt_encoded.items()}
-
-        with torch.inference_mode():
-            generated = model.generate(
-                **prompt_encoded,
-                max_new_tokens=config.max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-
-        generated_only = generated[:, prompt_encoded["input_ids"].shape[1] :]
-        responses = tokenizer.batch_decode(generated_only, skip_special_tokens=True)
         full_texts = [prompt + response for prompt, response in zip(batch_prompts, responses)]
 
         full_encoded = _encode_with_offsets(tokenizer, full_texts)
@@ -177,9 +178,12 @@ def collect_phase_readouts_and_generations(
             phase_positions = _phase_positions(row_offsets, attention_mask, record, prompt, response)
             enriched = dict(record)
             enriched["rendered_prompt"] = prompt
-            enriched["response"] = response.strip()
-            enriched["phase_token_counts"] = {phase: len(tokens) for phase, tokens in phase_positions.items()}
-            enriched["objective_char_span"] = _char_span(prompt, record["private_objective"])
+            enriched["response"] = response
+            enriched["phase_token_counts"] = {
+                phase: len(tokens) for phase, tokens in phase_positions.items()
+            }
+            enriched["objective_a_char_span"] = _char_span(prompt, record["objective_a"])
+            enriched["objective_b_char_span"] = _char_span(prompt, record["objective_b"])
             enriched["public_task_char_span"] = _char_span(prompt, record["cover_task"])
             enriched["response_char_span"] = [len(prompt), len(prompt) + len(response)]
             enriched_records.append(enriched)
@@ -189,10 +193,47 @@ def collect_phase_readouts_and_generations(
     records_path = output_dir / "records_with_responses.jsonl"
     attention_path = output_dir / "attention_asymmetry_rows.csv"
 
-    np.savez_compressed(activations_path, activations=activations, phase_names=np.array(PHASE_NAMES))
+    np.savez_compressed(
+        activations_path,
+        activations=activations,
+        phase_names=np.array(PHASE_NAMES),
+    )
     write_jsonl(enriched_records, records_path)
     pd.DataFrame(attention_rows, columns=ATTENTION_COLUMNS).to_csv(attention_path, index=False)
     return activations_path, records_path, attention_path
+
+
+def _responses_for_batch(
+    records: list[dict],
+    prompts: list[str],
+    model: Any,
+    tokenizer: Any,
+    config: ModelConfig,
+    first_device: Any,
+) -> list[str]:
+    fixed = [record.get("fixed_response") for record in records]
+    if all(response is not None for response in fixed):
+        return [str(response) for response in fixed]
+
+    import torch
+
+    encoded = tokenizer(
+        prompts,
+        padding=True,
+        return_tensors="pt",
+        add_special_tokens=False,
+    )
+    encoded = {key: value.to(first_device) for key, value in encoded.items()}
+    with torch.inference_mode():
+        generated = model.generate(
+            **encoded,
+            max_new_tokens=config.max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    generated_only = generated[:, encoded["input_ids"].shape[1] :]
+    return [text.strip() for text in tokenizer.batch_decode(generated_only, skip_special_tokens=True)]
 
 
 def _encode_with_offsets(tokenizer: Any, texts: list[str]) -> dict[str, Any]:
@@ -207,7 +248,7 @@ def _encode_with_offsets(tokenizer: Any, texts: list[str]) -> dict[str, Any]:
     except NotImplementedError as exc:
         raise RuntimeError(
             "This experiment needs a fast tokenizer that supports offset mappings "
-            "so objective/task/response phases can be localized."
+            "so selector/objective/response phases can be localized."
         ) from exc
 
 
@@ -233,7 +274,6 @@ def _extract_phase_activations(
                 token_positions = positions[phase] or positions["final_prompt"]
                 phase_vectors.append(hidden_row[token_positions].mean(axis=0))
             layer_vectors.append(np.stack(phase_vectors, axis=0))
-        # Shape per example: phase, layer, hidden_size.
         batch_vectors.append(np.stack(layer_vectors, axis=1))
     return np.stack(batch_vectors, axis=0)
 
@@ -251,40 +291,63 @@ def _extract_attention_rows(
 
     for row_idx, (record, prompt, response) in enumerate(zip(records, prompts, responses)):
         positions = _phase_positions(offsets[row_idx], mask_np[row_idx], record, prompt, response)
-        objective_positions = positions["objective_span"] or positions["post_objective"]
-        task_positions = positions["public_task_span"] or positions["final_prompt"]
-        if not objective_positions or not task_positions:
+        offsets_np = _as_numpy(offsets[row_idx])
+        objective_a = _tokens_overlapping(
+            offsets_np,
+            mask_np[row_idx],
+            _char_span(prompt, record["objective_a"]),
+        )
+        objective_b = _tokens_overlapping(
+            offsets_np,
+            mask_np[row_idx],
+            _char_span(prompt, record["objective_b"]),
+        )
+        active_positions = objective_a if record["active_slot"] == "A" else objective_b
+        inactive_positions = objective_b if record["active_slot"] == "A" else objective_a
+        if not active_positions or not inactive_positions:
             continue
 
         for layer, attention in enumerate(attentions):
             attention_row = attention[row_idx].detach().float().cpu().numpy()
             for phase in PHASE_NAMES:
                 query_positions = positions[phase] or positions["final_prompt"]
-                objective_mass = attention_row[:, query_positions][:, :, objective_positions].sum(axis=2).mean(axis=1)
-                task_mass = attention_row[:, query_positions][:, :, task_positions].sum(axis=2).mean(axis=1)
-                objective_density = objective_mass / len(objective_positions)
-                task_density = task_mass / len(task_positions)
-                for head, (obj_mass, pub_mass, obj_density, pub_density) in enumerate(
-                    zip(objective_mass, task_mass, objective_density, task_density)
+                active_mass = (
+                    attention_row[:, query_positions][:, :, active_positions]
+                    .sum(axis=2)
+                    .mean(axis=1)
+                )
+                inactive_mass = (
+                    attention_row[:, query_positions][:, :, inactive_positions]
+                    .sum(axis=2)
+                    .mean(axis=1)
+                )
+                active_density = active_mass / len(active_positions)
+                inactive_density = inactive_mass / len(inactive_positions)
+                for head, (act_mass, inact_mass, act_density, inact_density) in enumerate(
+                    zip(active_mass, inactive_mass, active_density, inactive_density)
                 ):
                     rows.append(
                         {
                             "id": record["id"],
+                            "pair_id": record["pair_id"],
                             "label": record["label"],
                             "label_name": record["label_name"],
                             "template_id": record["template_id"],
                             "scenario_id": record["scenario_id"],
+                            "active_slot": record["active_slot"],
                             "query_phase": phase,
                             "layer": layer,
                             "head": head,
-                            "objective_token_count": len(objective_positions),
-                            "public_task_token_count": len(task_positions),
-                            "attention_mass_to_objective": float(obj_mass),
-                            "attention_mass_to_public_task": float(pub_mass),
-                            "attention_density_to_objective": float(obj_density),
-                            "attention_density_to_public_task": float(pub_density),
-                            "goal_anchor_asymmetry": float(obj_density - pub_density),
-                            "goal_anchor_log_ratio": float(math.log((obj_density + 1e-8) / (pub_density + 1e-8))),
+                            "active_objective_token_count": len(active_positions),
+                            "inactive_objective_token_count": len(inactive_positions),
+                            "attention_mass_to_active": float(act_mass),
+                            "attention_mass_to_inactive": float(inact_mass),
+                            "attention_density_to_active": float(act_density),
+                            "attention_density_to_inactive": float(inact_density),
+                            "active_objective_asymmetry": float(act_density - inact_density),
+                            "active_objective_log_ratio": float(
+                                math.log((act_density + 1e-8) / (inact_density + 1e-8))
+                            ),
                         }
                     )
     return rows
@@ -299,20 +362,28 @@ def _phase_positions(
 ) -> dict[str, list[int]]:
     offsets_np = _as_numpy(offsets)
     mask_np = np.asarray(attention_mask)
-    objective_span = _char_span(prompt, record["private_objective"])
+    selector_text = f"ACTIVE OBJECTIVE: {record['active_slot']}"
+    selector_span = _char_span(prompt, selector_text)
+    slot_start = max(selector_span[0], selector_span[1] - len(record["active_slot"]))
+    slot_span = (slot_start, selector_span[1])
     task_span = _char_span(prompt, record["cover_task"])
     response_span = (len(prompt), len(prompt) + len(response))
+
     real_tokens = [idx for idx, keep in enumerate(mask_np.tolist()) if keep]
     prompt_tokens = _tokens_overlapping(offsets_np, mask_np, (0, len(prompt)))
     final_prompt = [prompt_tokens[-1] if prompt_tokens else real_tokens[-1]]
-
-    objective_tokens = _tokens_overlapping(offsets_np, mask_np, objective_span)
+    before_selector = [
+        idx
+        for idx in prompt_tokens
+        if int(offsets_np[idx][1]) <= slot_start and int(offsets_np[idx][1]) > 0
+    ]
+    selector_tokens = _tokens_overlapping(offsets_np, mask_np, slot_span)
     task_tokens = _tokens_overlapping(offsets_np, mask_np, task_span)
     response_tokens = _tokens_overlapping(offsets_np, mask_np, response_span)
 
     return {
-        "objective_span": objective_tokens,
-        "post_objective": [objective_tokens[-1]] if objective_tokens else final_prompt,
+        "pre_selector": [before_selector[-1]] if before_selector else final_prompt,
+        "post_selector": selector_tokens or final_prompt,
         "public_task_span": task_tokens,
         "final_prompt": final_prompt,
         "response_first": [response_tokens[0]] if response_tokens else final_prompt,
@@ -320,10 +391,16 @@ def _phase_positions(
     }
 
 
-def _tokens_overlapping(offsets: np.ndarray, attention_mask: np.ndarray, span: tuple[int, int]) -> list[int]:
+def _tokens_overlapping(
+    offsets: np.ndarray,
+    attention_mask: np.ndarray,
+    span: tuple[int, int],
+) -> list[int]:
     start, end = span
     tokens = []
-    for idx, ((tok_start, tok_end), keep) in enumerate(zip(offsets.tolist(), attention_mask.tolist())):
+    for idx, ((tok_start, tok_end), keep) in enumerate(
+        zip(offsets.tolist(), attention_mask.tolist())
+    ):
         if not keep or tok_end <= tok_start:
             continue
         if tok_start < end and tok_end > start:
