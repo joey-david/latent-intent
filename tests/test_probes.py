@@ -41,3 +41,11 @@ def test_paired_direction_is_zero_before_selector_and_shared_after(tmp_path: Pat
     assert post["direction_coherence"] > 0.99
     assert post["heldout_cosine_mean"] > 0.99
     assert post["heldout_positive_rate"] == 1.0
+
+    # Four held-out domains -> exact grouped null has 2^4 assignments. Because
+    # every domain points in the same direction, only the all-positive assignment
+    # reaches the observed statistic.
+    assert post["null_unit"] == "scenario_id"
+    assert post["n_scenarios"] == 4
+    assert post["null_draws"] == 16
+    assert np.isclose(post["permutation_p"], 1 / 16)
