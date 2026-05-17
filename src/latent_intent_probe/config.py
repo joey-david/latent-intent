@@ -25,6 +25,7 @@ class ModelConfig:
     max_new_tokens: int = 32
     attn_implementation: str = "eager"
     collect_attentions: bool = True
+    attention_limit: int | None = 64
     enable_thinking: bool | None = False
 
 
