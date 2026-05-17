@@ -137,12 +137,15 @@ def collect_phase_readouts_and_generations(
         full_encoded = _encode_with_offsets(tokenizer, full_texts)
         offsets = full_encoded.pop("offset_mapping")
         full_encoded = {key: value.to(first_device) for key, value in full_encoded.items()}
+        collect_batch_attentions = bool(config.collect_attentions) and (
+            config.attention_limit is None or start < config.attention_limit
+        )
 
         with torch.inference_mode():
             outputs = model(
                 **full_encoded,
                 output_hidden_states=True,
-                output_attentions=config.collect_attentions,
+                output_attentions=collect_batch_attentions,
                 use_cache=False,
             )
 
@@ -156,7 +159,7 @@ def collect_phase_readouts_and_generations(
         )
         phase_activation_batches.append(batch_phase_vectors)
 
-        if config.collect_attentions and outputs.attentions:
+        if collect_batch_attentions and outputs.attentions:
             attention_rows.extend(
                 _extract_attention_rows(
                     outputs.attentions,
