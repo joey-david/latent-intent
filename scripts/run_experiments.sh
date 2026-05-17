@@ -24,5 +24,6 @@ else
   echo "Using existing .venv setup; set FORCE_SETUP=1 to reinstall dependencies."
 fi
 
-CONFIG="${CONFIG:-configs/default.yaml}"
+CONFIG="${CONFIG:-configs/qwen3_8b_counterfactual.yaml}"
+echo "Running Latent Intent config: $CONFIG"
 python -m latent_intent_probe.run --config "$CONFIG" "$@"
