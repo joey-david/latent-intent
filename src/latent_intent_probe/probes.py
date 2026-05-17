@@ -105,11 +105,11 @@ def summarize_paired_directions(
     config: ProbeConfig,
     seed: int,
 ) -> pd.DataFrame:
-    """Measure whether harmful-minus-benign counterfactual deltas share a direction.
+    """Measure whether harmful-minus-benign pair deltas share a reusable direction.
 
-    Pair members differ only in the A/B selector. We normalize each pairwise
-    activation delta, measure directional coherence, evaluate a leave-one-domain-
-    out direction, and compare coherence against random sign flips.
+    A direction is learned from all objective domains except one and evaluated on
+    the held-out domain. Sign-flipping the resulting held-out cosine scores gives
+    a cheap paired null without constructing large pairwise Gram matrices.
     """
     activations, phase_names = _load_activations(activations_path)
     pair_rows: dict[str, dict[int, int]] = {}
@@ -118,7 +118,7 @@ def summarize_paired_directions(
 
     deltas = []
     scenarios = []
-    for pair_id, label_map in pair_rows.items():
+    for label_map in pair_rows.values():
         if 0 not in label_map or 1 not in label_map:
             continue
         benign_idx = label_map[0]
@@ -147,7 +147,6 @@ def summarize_paired_directions(
                         "n_pairs": int(valid.sum()),
                         "delta_norm_mean": float(norms.mean()),
                         "direction_coherence": 0.0,
-                        "cross_scenario_cosine": 0.0,
                         "heldout_cosine_mean": 0.0,
                         "heldout_positive_rate": 0.0,
                         "permutation_p": 1.0,
@@ -157,15 +156,9 @@ def summarize_paired_directions(
 
             u = x[valid] / norms[valid, None]
             valid_scenarios = scenarios_array[valid]
-            gram = np.clip(u @ u.T, -1.0, 1.0)
-            n = len(u)
-            coherence = float(np.sqrt(max(float(gram.sum()), 0.0)) / n)
+            direction_coherence = float(np.linalg.norm(u.mean(axis=0)))
 
-            upper = np.triu(np.ones((n, n), dtype=bool), k=1)
-            cross_mask = upper & (valid_scenarios[:, None] != valid_scenarios[None, :])
-            cross_cos = float(gram[cross_mask].mean()) if cross_mask.any() else 0.0
-
-            heldout_cosines = []
+            heldout_cosines: list[float] = []
             for scenario in np.unique(valid_scenarios):
                 train = u[valid_scenarios != scenario]
                 test = u[valid_scenarios == scenario]
@@ -178,27 +171,27 @@ def summarize_paired_directions(
                 direction /= direction_norm
                 heldout_cosines.extend((test @ direction).tolist())
 
-            heldout_mean = float(np.mean(heldout_cosines)) if heldout_cosines else 0.0
-            heldout_positive = (
-                float(np.mean(np.asarray(heldout_cosines) > 0)) if heldout_cosines else 0.0
-            )
+            scores = np.asarray(heldout_cosines, dtype=float)
+            heldout_mean = float(scores.mean()) if len(scores) else 0.0
+            heldout_positive = float((scores > 0).mean()) if len(scores) else 0.0
 
-            permutations = max(1, int(config.permutation_samples))
-            signs = rng.choice((-1.0, 1.0), size=(permutations, n))
-            quadratic = np.einsum("bi,ij,bj->b", signs, gram, signs, optimize=True)
-            null_coherence = np.sqrt(np.maximum(quadratic, 0.0)) / n
-            permutation_p = float(
-                (1 + np.count_nonzero(null_coherence >= coherence)) / (permutations + 1)
-            )
+            if len(scores):
+                permutations = max(1, int(config.permutation_samples))
+                signs = rng.choice((-1.0, 1.0), size=(permutations, len(scores)))
+                null_means = (signs * scores[None, :]).mean(axis=1)
+                permutation_p = float(
+                    (1 + np.count_nonzero(null_means >= heldout_mean)) / (permutations + 1)
+                )
+            else:
+                permutation_p = 1.0
 
             rows.append(
                 {
                     "phase": phase,
                     "layer": layer,
-                    "n_pairs": n,
+                    "n_pairs": int(valid.sum()),
                     "delta_norm_mean": float(norms[valid].mean()),
-                    "direction_coherence": coherence,
-                    "cross_scenario_cosine": cross_cos,
+                    "direction_coherence": direction_coherence,
                     "heldout_cosine_mean": heldout_mean,
                     "heldout_positive_rate": heldout_positive,
                     "permutation_p": permutation_p,
