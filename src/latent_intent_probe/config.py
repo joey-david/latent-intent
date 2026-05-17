@@ -10,28 +10,28 @@ import yaml
 
 @dataclass
 class RunConfig:
-    name: str = "temporal-latent-intent-qwen15b"
+    name: str = "counterfactual-latent-intent-qwen3-8b"
     seed: int = 20260607
     output_dir: str = "results"
 
 
 @dataclass
 class ModelConfig:
-    name: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    name: str = "Qwen/Qwen3-8B"
     dtype: str = "auto"
     device_map: str = "auto"
     trust_remote_code: bool = False
-    batch_size: int = 2
-    max_new_tokens: int = 80
+    batch_size: int = 1
+    max_new_tokens: int = 32
     attn_implementation: str = "eager"
-    collect_attentions: bool = False
-    enable_thinking: bool | None = None
+    collect_attentions: bool = True
+    enable_thinking: bool | None = False
 
 
 @dataclass
 class DatasetConfig:
-    examples_per_label: int = 180
-    include_neutral_decoys: bool = True
+    examples_per_label: int = 128
+    fixed_response: str = "Status: review complete."
 
 
 @dataclass
@@ -39,7 +39,8 @@ class ProbeConfig:
     cv_folds: int = 5
     max_iter: int = 2000
     regularization_c: float = 0.25
-    transfer_top_k_layers: int = 8
+    transfer_top_k_layers: int = 6
+    permutation_samples: int = 200
 
 
 @dataclass
