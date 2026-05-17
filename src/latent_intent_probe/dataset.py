@@ -86,18 +86,18 @@ def build_dataset(config: DatasetConfig, seed: int) -> list[IntentRecord]:
 
     Each pair contains the same two objective strings in the same A/B slots and
     the same public task/output. The only text that differs within a pair is the
-    A/B selector. Which slot contains the harmful objective is randomized across
-    pairs, so the selector token alone is not predictive of the label.
+    A/B selector. Harmful-objective placement is balanced between A and B within
+    each scenario whenever possible, so the selector token alone is not useful.
     """
     rng = random.Random(seed)
     pair_specs = _all_pair_specs()
     rng.shuffle(pair_specs)
     selected = _take_pair_specs(pair_specs, config.examples_per_label, rng)
+    harmful_slots = _balanced_harmful_slots(selected, rng)
 
     records: list[IntentRecord] = []
-    for pair_index, spec in enumerate(selected):
+    for pair_index, (spec, harmful_slot) in enumerate(zip(selected, harmful_slots)):
         template_id, preamble, scenario_id, harmful, benign = spec
-        harmful_slot = rng.choice(("A", "B"))
         objective_a = harmful if harmful_slot == "A" else benign
         objective_b = benign if harmful_slot == "A" else harmful
         pair_id = f"pair-{pair_index:05d}-{scenario_id}-{template_id}"
@@ -151,6 +151,26 @@ def _take_pair_specs(
     while len(selected) < count:
         selected.append(rng.choice(specs))
     return selected
+
+
+def _balanced_harmful_slots(
+    specs: list[tuple[str, str, str, str, str]],
+    rng: random.Random,
+) -> list[str]:
+    by_scenario: dict[str, list[int]] = {}
+    for idx, (_, _, scenario_id, _, _) in enumerate(specs):
+        by_scenario.setdefault(scenario_id, []).append(idx)
+
+    slots = ["A"] * len(specs)
+    for indices in by_scenario.values():
+        rng.shuffle(indices)
+        start = rng.choice(("A", "B"))
+        for offset, idx in enumerate(indices):
+            if start == "A":
+                slots[idx] = "A" if offset % 2 == 0 else "B"
+            else:
+                slots[idx] = "B" if offset % 2 == 0 else "A"
+    return slots
 
 
 def _make_record(
