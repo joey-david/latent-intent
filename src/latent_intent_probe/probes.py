@@ -10,6 +10,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, roc_auc_sco
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from tqdm.auto import tqdm
 
 from latent_intent_probe.config import ProbeConfig
 
@@ -25,20 +26,23 @@ def fit_activation_probes(
     groups = np.array([record["scenario_id"] for record in records])
 
     rows = []
-    for phase_idx, phase in enumerate(phase_names):
-        for layer in range(activations.shape[2]):
-            rows.extend(
-                _cross_validated_scores(
-                    activations[:, phase_idx, layer, :],
-                    labels,
-                    groups,
-                    config,
-                    seed,
-                    model_kind="phase_activation",
-                    layer=layer,
-                    phase=phase,
+    total = len(phase_names) * activations.shape[2]
+    with tqdm(total=total, desc="activation probes", unit="phase-layer") as progress:
+        for phase_idx, phase in enumerate(phase_names):
+            for layer in range(activations.shape[2]):
+                rows.extend(
+                    _cross_validated_scores(
+                        activations[:, phase_idx, layer, :],
+                        labels,
+                        groups,
+                        config,
+                        seed,
+                        model_kind="phase_activation",
+                        layer=layer,
+                        phase=phase,
+                    )
                 )
-            )
+                progress.update(1)
     return pd.DataFrame(rows)
 
 
@@ -56,28 +60,31 @@ def fit_phase_transfer_probes(
 
     rows = []
     folds = list(_splitter(labels, groups, config, seed).split(activations, labels, groups))
-    for layer in top_layers:
-        for train_phase_idx, train_phase in enumerate(phase_names):
-            for test_phase_idx, test_phase in enumerate(phase_names):
-                for fold, (train_idx, test_idx) in enumerate(folds):
-                    clf = _activation_clf(config, seed)
-                    clf.fit(activations[train_idx, train_phase_idx, layer, :], labels[train_idx])
-                    probabilities = clf.predict_proba(
-                        activations[test_idx, test_phase_idx, layer, :]
-                    )[:, 1]
-                    predictions = (probabilities >= 0.5).astype(int)
-                    row = _score_row(
-                        labels[test_idx],
-                        predictions,
-                        probabilities,
-                        model_kind="phase_transfer",
-                        fold=fold,
-                        layer=layer,
-                        phase=test_phase,
-                    )
-                    row["train_phase"] = train_phase
-                    row["test_phase"] = test_phase
-                    rows.append(row)
+    total = len(top_layers) * len(phase_names) * len(phase_names)
+    with tqdm(total=total, desc="phase transfer", unit="phase-pair") as progress:
+        for layer in top_layers:
+            for train_phase_idx, train_phase in enumerate(phase_names):
+                for test_phase_idx, test_phase in enumerate(phase_names):
+                    for fold, (train_idx, test_idx) in enumerate(folds):
+                        clf = _activation_clf(config, seed)
+                        clf.fit(activations[train_idx, train_phase_idx, layer, :], labels[train_idx])
+                        probabilities = clf.predict_proba(
+                            activations[test_idx, test_phase_idx, layer, :]
+                        )[:, 1]
+                        predictions = (probabilities >= 0.5).astype(int)
+                        row = _score_row(
+                            labels[test_idx],
+                            predictions,
+                            probabilities,
+                            model_kind="phase_transfer",
+                            fold=fold,
+                            layer=layer,
+                            phase=test_phase,
+                        )
+                        row["train_phase"] = train_phase
+                        row["test_phase"] = test_phase
+                        rows.append(row)
+                    progress.update(1)
     return pd.DataFrame(rows)
 
 
@@ -94,7 +101,7 @@ def fit_text_baselines(records: list[dict], config: ProbeConfig, seed: int) -> p
     }
 
     rows = []
-    for name, texts in baselines.items():
+    for name, texts in tqdm(baselines.items(), total=len(baselines), desc="text baselines", unit="baseline"):
         rows.extend(_cross_validated_text_scores(texts, labels, groups, config, seed, name))
     return pd.DataFrame(rows)
 
@@ -134,69 +141,73 @@ def summarize_paired_directions(
     rng = np.random.default_rng(seed)
     rows = []
 
-    for phase_idx, phase in enumerate(phase_names):
-        for layer in range(delta_array.shape[2]):
-            x = delta_array[:, phase_idx, layer, :].astype(np.float64, copy=False)
-            norms = np.linalg.norm(x, axis=1)
-            valid = norms > 1e-10
-            if valid.sum() < 2:
+    total = len(phase_names) * delta_array.shape[2]
+    with tqdm(total=total, desc="paired directions", unit="phase-layer") as progress:
+        for phase_idx, phase in enumerate(phase_names):
+            for layer in range(delta_array.shape[2]):
+                x = delta_array[:, phase_idx, layer, :].astype(np.float64, copy=False)
+                norms = np.linalg.norm(x, axis=1)
+                valid = norms > 1e-10
+                if valid.sum() < 2:
+                    rows.append(
+                        {
+                            "phase": phase,
+                            "layer": layer,
+                            "n_pairs": int(valid.sum()),
+                            "delta_norm_mean": float(norms.mean()),
+                            "direction_coherence": 0.0,
+                            "heldout_cosine_mean": 0.0,
+                            "heldout_positive_rate": 0.0,
+                            "permutation_p": 1.0,
+                        }
+                    )
+                    progress.update(1)
+                    continue
+
+                u = x[valid] / norms[valid, None]
+                valid_scenarios = scenarios_array[valid]
+                direction_coherence = float(np.linalg.norm(u.mean(axis=0)))
+
+                heldout_cosines: list[float] = []
+                for scenario in np.unique(valid_scenarios):
+                    train = u[valid_scenarios != scenario]
+                    test = u[valid_scenarios == scenario]
+                    if len(train) == 0 or len(test) == 0:
+                        continue
+                    direction = train.mean(axis=0)
+                    direction_norm = np.linalg.norm(direction)
+                    if direction_norm <= 1e-10:
+                        continue
+                    direction /= direction_norm
+                    heldout_cosines.extend((test @ direction).tolist())
+
+                scores = np.asarray(heldout_cosines, dtype=float)
+                heldout_mean = float(scores.mean()) if len(scores) else 0.0
+                heldout_positive = float((scores > 0).mean()) if len(scores) else 0.0
+
+                if len(scores):
+                    permutations = max(1, int(config.permutation_samples))
+                    signs = rng.choice((-1.0, 1.0), size=(permutations, len(scores)))
+                    null_means = (signs * scores[None, :]).mean(axis=1)
+                    permutation_p = float(
+                        (1 + np.count_nonzero(null_means >= heldout_mean)) / (permutations + 1)
+                    )
+                else:
+                    permutation_p = 1.0
+
                 rows.append(
                     {
                         "phase": phase,
                         "layer": layer,
                         "n_pairs": int(valid.sum()),
-                        "delta_norm_mean": float(norms.mean()),
-                        "direction_coherence": 0.0,
-                        "heldout_cosine_mean": 0.0,
-                        "heldout_positive_rate": 0.0,
-                        "permutation_p": 1.0,
+                        "delta_norm_mean": float(norms[valid].mean()),
+                        "direction_coherence": direction_coherence,
+                        "heldout_cosine_mean": heldout_mean,
+                        "heldout_positive_rate": heldout_positive,
+                        "permutation_p": permutation_p,
                     }
                 )
-                continue
-
-            u = x[valid] / norms[valid, None]
-            valid_scenarios = scenarios_array[valid]
-            direction_coherence = float(np.linalg.norm(u.mean(axis=0)))
-
-            heldout_cosines: list[float] = []
-            for scenario in np.unique(valid_scenarios):
-                train = u[valid_scenarios != scenario]
-                test = u[valid_scenarios == scenario]
-                if len(train) == 0 or len(test) == 0:
-                    continue
-                direction = train.mean(axis=0)
-                direction_norm = np.linalg.norm(direction)
-                if direction_norm <= 1e-10:
-                    continue
-                direction /= direction_norm
-                heldout_cosines.extend((test @ direction).tolist())
-
-            scores = np.asarray(heldout_cosines, dtype=float)
-            heldout_mean = float(scores.mean()) if len(scores) else 0.0
-            heldout_positive = float((scores > 0).mean()) if len(scores) else 0.0
-
-            if len(scores):
-                permutations = max(1, int(config.permutation_samples))
-                signs = rng.choice((-1.0, 1.0), size=(permutations, len(scores)))
-                null_means = (signs * scores[None, :]).mean(axis=1)
-                permutation_p = float(
-                    (1 + np.count_nonzero(null_means >= heldout_mean)) / (permutations + 1)
-                )
-            else:
-                permutation_p = 1.0
-
-            rows.append(
-                {
-                    "phase": phase,
-                    "layer": layer,
-                    "n_pairs": int(valid.sum()),
-                    "delta_norm_mean": float(norms[valid].mean()),
-                    "direction_coherence": direction_coherence,
-                    "heldout_cosine_mean": heldout_mean,
-                    "heldout_positive_rate": heldout_positive,
-                    "permutation_p": permutation_p,
-                }
-            )
+                progress.update(1)
 
     return pd.DataFrame(rows)
 
@@ -212,7 +223,7 @@ def summarize_attention_asymmetry(attention_path: str | Path) -> pd.DataFrame:
 
     rows = []
     grouped = attention.groupby(["query_phase", "layer", "head"], dropna=False)
-    for (phase, layer, head), group in grouped:
+    for (phase, layer, head), group in tqdm(grouped, total=grouped.ngroups, desc="attention summary", unit="head"):
         asymmetry = group["active_objective_asymmetry"].to_numpy(dtype=float)
         if len(asymmetry) < 2:
             continue
