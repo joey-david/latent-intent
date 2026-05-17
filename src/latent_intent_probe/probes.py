@@ -21,25 +21,24 @@ def fit_activation_probes(
     seed: int,
 ) -> pd.DataFrame:
     activations, phase_names = _load_activations(activations_path)
-    binary_idx = _binary_indices(records)
-    labels = np.array([records[i]["label"] for i in binary_idx])
-    groups = np.array([records[i]["template_id"] for i in binary_idx])
-    x_all = activations[binary_idx]
+    labels = np.array([record["label"] for record in records])
+    groups = np.array([record["scenario_id"] for record in records])
 
     rows = []
     for phase_idx, phase in enumerate(phase_names):
-        for layer in range(x_all.shape[2]):
-            scores = _cross_validated_scores(
-                x_all[:, phase_idx, layer, :],
-                labels,
-                groups,
-                config,
-                seed,
-                model_kind="phase_activation",
-                layer=layer,
-                phase=phase,
+        for layer in range(activations.shape[2]):
+            rows.extend(
+                _cross_validated_scores(
+                    activations[:, phase_idx, layer, :],
+                    labels,
+                    groups,
+                    config,
+                    seed,
+                    model_kind="phase_activation",
+                    layer=layer,
+                    phase=phase,
+                )
             )
-            rows.extend(scores)
     return pd.DataFrame(rows)
 
 
@@ -51,22 +50,21 @@ def fit_phase_transfer_probes(
     seed: int,
 ) -> pd.DataFrame:
     activations, phase_names = _load_activations(activations_path)
-    binary_idx = _binary_indices(records)
-    labels = np.array([records[i]["label"] for i in binary_idx])
-    groups = np.array([records[i]["template_id"] for i in binary_idx])
-    x_all = activations[binary_idx]
+    labels = np.array([record["label"] for record in records])
+    groups = np.array([record["scenario_id"] for record in records])
     top_layers = _top_layers(activation_metrics, config.transfer_top_k_layers)
 
     rows = []
-    splitter = _splitter(labels, groups, config, seed)
-    folds = list(splitter.split(x_all, labels, groups))
+    folds = list(_splitter(labels, groups, config, seed).split(activations, labels, groups))
     for layer in top_layers:
         for train_phase_idx, train_phase in enumerate(phase_names):
             for test_phase_idx, test_phase in enumerate(phase_names):
                 for fold, (train_idx, test_idx) in enumerate(folds):
                     clf = _activation_clf(config, seed)
-                    clf.fit(x_all[train_idx, train_phase_idx, layer, :], labels[train_idx])
-                    probabilities = clf.predict_proba(x_all[test_idx, test_phase_idx, layer, :])[:, 1]
+                    clf.fit(activations[train_idx, train_phase_idx, layer, :], labels[train_idx])
+                    probabilities = clf.predict_proba(
+                        activations[test_idx, test_phase_idx, layer, :]
+                    )[:, 1]
                     predictions = (probabilities >= 0.5).astype(int)
                     row = _score_row(
                         labels[test_idx],
@@ -84,21 +82,129 @@ def fit_phase_transfer_probes(
 
 
 def fit_text_baselines(records: list[dict], config: ProbeConfig, seed: int) -> pd.DataFrame:
-    binary_idx = _binary_indices(records)
-    labels = np.array([records[i]["label"] for i in binary_idx])
-    groups = np.array([records[i]["template_id"] for i in binary_idx])
-
+    labels = np.array([record["label"] for record in records])
+    groups = np.array([record["scenario_id"] for record in records])
     baselines = {
-        "output_tfidf": [records[i].get("response", "") for i in binary_idx],
-        "prompt_tfidf": [records[i].get("rendered_prompt", "") for i in binary_idx],
-        "objective_text_tfidf": [records[i].get("private_objective", "") for i in binary_idx],
+        "output_tfidf": [record.get("response", "") for record in records],
+        "prompt_tfidf": [record.get("rendered_prompt", "") for record in records],
+        "selector_tfidf": [f"active_slot_{record['active_slot']}" for record in records],
+        "objective_pair_tfidf": [
+            f"{record['objective_a']} || {record['objective_b']}" for record in records
+        ],
     }
 
     rows = []
     for name, texts in baselines.items():
-        if not any(text.strip() for text in texts):
-            continue
         rows.extend(_cross_validated_text_scores(texts, labels, groups, config, seed, name))
+    return pd.DataFrame(rows)
+
+
+def summarize_paired_directions(
+    activations_path: str | Path,
+    records: list[dict],
+    config: ProbeConfig,
+    seed: int,
+) -> pd.DataFrame:
+    """Measure whether harmful-minus-benign counterfactual deltas share a direction.
+
+    Pair members differ only in the A/B selector. We normalize each pairwise
+    activation delta, measure directional coherence, evaluate a leave-one-domain-
+    out direction, and compare coherence against random sign flips.
+    """
+    activations, phase_names = _load_activations(activations_path)
+    pair_rows: dict[str, dict[int, int]] = {}
+    for idx, record in enumerate(records):
+        pair_rows.setdefault(record["pair_id"], {})[int(record["label"])] = idx
+
+    deltas = []
+    scenarios = []
+    for pair_id, label_map in pair_rows.items():
+        if 0 not in label_map or 1 not in label_map:
+            continue
+        benign_idx = label_map[0]
+        harmful_idx = label_map[1]
+        deltas.append(activations[harmful_idx] - activations[benign_idx])
+        scenarios.append(records[harmful_idx]["scenario_id"])
+
+    if not deltas:
+        return pd.DataFrame()
+
+    delta_array = np.stack(deltas, axis=0)
+    scenarios_array = np.array(scenarios)
+    rng = np.random.default_rng(seed)
+    rows = []
+
+    for phase_idx, phase in enumerate(phase_names):
+        for layer in range(delta_array.shape[2]):
+            x = delta_array[:, phase_idx, layer, :].astype(np.float64, copy=False)
+            norms = np.linalg.norm(x, axis=1)
+            valid = norms > 1e-10
+            if valid.sum() < 2:
+                rows.append(
+                    {
+                        "phase": phase,
+                        "layer": layer,
+                        "n_pairs": int(valid.sum()),
+                        "delta_norm_mean": float(norms.mean()),
+                        "direction_coherence": 0.0,
+                        "cross_scenario_cosine": 0.0,
+                        "heldout_cosine_mean": 0.0,
+                        "heldout_positive_rate": 0.0,
+                        "permutation_p": 1.0,
+                    }
+                )
+                continue
+
+            u = x[valid] / norms[valid, None]
+            valid_scenarios = scenarios_array[valid]
+            gram = np.clip(u @ u.T, -1.0, 1.0)
+            n = len(u)
+            coherence = float(np.sqrt(max(float(gram.sum()), 0.0)) / n)
+
+            upper = np.triu(np.ones((n, n), dtype=bool), k=1)
+            cross_mask = upper & (valid_scenarios[:, None] != valid_scenarios[None, :])
+            cross_cos = float(gram[cross_mask].mean()) if cross_mask.any() else 0.0
+
+            heldout_cosines = []
+            for scenario in np.unique(valid_scenarios):
+                train = u[valid_scenarios != scenario]
+                test = u[valid_scenarios == scenario]
+                if len(train) == 0 or len(test) == 0:
+                    continue
+                direction = train.mean(axis=0)
+                direction_norm = np.linalg.norm(direction)
+                if direction_norm <= 1e-10:
+                    continue
+                direction /= direction_norm
+                heldout_cosines.extend((test @ direction).tolist())
+
+            heldout_mean = float(np.mean(heldout_cosines)) if heldout_cosines else 0.0
+            heldout_positive = (
+                float(np.mean(np.asarray(heldout_cosines) > 0)) if heldout_cosines else 0.0
+            )
+
+            permutations = max(1, int(config.permutation_samples))
+            signs = rng.choice((-1.0, 1.0), size=(permutations, n))
+            quadratic = np.einsum("bi,ij,bj->b", signs, gram, signs, optimize=True)
+            null_coherence = np.sqrt(np.maximum(quadratic, 0.0)) / n
+            permutation_p = float(
+                (1 + np.count_nonzero(null_coherence >= coherence)) / (permutations + 1)
+            )
+
+            rows.append(
+                {
+                    "phase": phase,
+                    "layer": layer,
+                    "n_pairs": n,
+                    "delta_norm_mean": float(norms[valid].mean()),
+                    "direction_coherence": coherence,
+                    "cross_scenario_cosine": cross_cos,
+                    "heldout_cosine_mean": heldout_mean,
+                    "heldout_positive_rate": heldout_positive,
+                    "permutation_p": permutation_p,
+                }
+            )
+
     return pd.DataFrame(rows)
 
 
@@ -108,32 +214,30 @@ def summarize_attention_asymmetry(attention_path: str | Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     attention = pd.read_csv(path)
-    attention = attention[attention["label"].isin([0, 1])].copy()
-    if attention.empty:
+    if attention.empty or "active_objective_asymmetry" not in attention:
         return pd.DataFrame()
 
     rows = []
     grouped = attention.groupby(["query_phase", "layer", "head"], dropna=False)
     for (phase, layer, head), group in grouped:
-        harmful = group[group["label"] == 1]["goal_anchor_asymmetry"].to_numpy()
-        benign = group[group["label"] == 0]["goal_anchor_asymmetry"].to_numpy()
-        labels = group["label"].to_numpy()
-        scores = group["goal_anchor_asymmetry"].to_numpy()
-        if len(harmful) < 2 or len(benign) < 2:
+        asymmetry = group["active_objective_asymmetry"].to_numpy(dtype=float)
+        if len(asymmetry) < 2:
             continue
-        pooled = np.sqrt((harmful.var(ddof=1) + benign.var(ddof=1)) / 2)
-        effect = 0.0 if pooled == 0 else float((harmful.mean() - benign.mean()) / pooled)
+        std = float(asymmetry.std(ddof=1))
+        mean = float(asymmetry.mean())
+        harmful = group[group["label"] == 1]["active_objective_asymmetry"].to_numpy(dtype=float)
+        benign = group[group["label"] == 0]["active_objective_asymmetry"].to_numpy(dtype=float)
         rows.append(
             {
                 "query_phase": phase,
                 "layer": int(layer),
                 "head": int(head),
-                "harmful_mean_asymmetry": float(harmful.mean()),
-                "benign_mean_asymmetry": float(benign.mean()),
-                "mean_delta_harmful_minus_benign": float(harmful.mean() - benign.mean()),
-                "cohens_d": effect,
-                "abs_cohens_d": abs(effect),
-                "auroc_from_asymmetry": roc_auc_score(labels, scores),
+                "mean_active_minus_inactive": mean,
+                "cohens_d_vs_zero": 0.0 if std == 0 else mean / std,
+                "abs_cohens_d": 0.0 if std == 0 else abs(mean / std),
+                "active_preference_rate": float((asymmetry > 0).mean()),
+                "harmful_mean": float(harmful.mean()) if len(harmful) else 0.0,
+                "benign_mean": float(benign.mean()) if len(benign) else 0.0,
                 "n": len(group),
             }
         )
@@ -142,41 +246,22 @@ def summarize_attention_asymmetry(attention_path: str | Path) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("abs_cohens_d", ascending=False)
 
 
-def summarize_leakage(records: list[dict]) -> pd.DataFrame:
-    terms = [
-        "credential",
-        "exfiltrat",
-        "sabotage",
-        "phishing",
-        "evasion",
-        "fraud",
-        "malware",
-        "surveillance",
-        "tamper",
-        "social-engineering",
-        "private objective",
-        "hidden objective",
-        "internal objective",
-    ]
-    rows = []
-    for record in records:
-        if record.get("label") not in (0, 1):
-            continue
-        response = record.get("response", "").lower()
-        rows.append(
+def summarize_output_control(records: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
             {
                 "id": record["id"],
+                "pair_id": record["pair_id"],
                 "label": record["label"],
-                "label_name": record["label_name"],
-                "response_chars": len(record.get("response", "")),
-                "leak_term_count": sum(term in response for term in terms),
-                "mentions_private_channel": any(
-                    term in response
-                    for term in ["private", "hidden", "internal", "harness", "experiment"]
+                "response": record.get("response", ""),
+                "fixed_response": record.get("fixed_response", ""),
+                "matches_fixed_response": (
+                    record.get("response", "") == record.get("fixed_response", "")
                 ),
             }
-        )
-    return pd.DataFrame(rows)
+            for record in records
+        ]
+    )
 
 
 def _load_activations(activations_path: str | Path) -> tuple[np.ndarray, list[str]]:
@@ -185,10 +270,6 @@ def _load_activations(activations_path: str | Path) -> tuple[np.ndarray, list[st
     if activations.ndim == 3:
         return activations[:, None, :, :], ["final_prompt"]
     return activations, [str(phase) for phase in payload["phase_names"].tolist()]
-
-
-def _binary_indices(records: list[dict]) -> list[int]:
-    return [idx for idx, record in enumerate(records) if record.get("label") in (0, 1)]
 
 
 def _top_layers(metrics: pd.DataFrame, count: int) -> list[int]:
@@ -205,7 +286,7 @@ def _splitter(labels: np.ndarray, groups: np.ndarray, config: ProbeConfig, seed:
     n_groups = len(set(groups.tolist()))
     n_splits = min(config.cv_folds, n_groups)
     if n_splits < 2:
-        raise ValueError("Need at least two template groups for cross-validation")
+        raise ValueError("Need at least two scenario groups for cross-validation")
     return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
 
@@ -238,7 +319,9 @@ def _cross_validated_scores(
         clf.fit(x[train_idx], labels[train_idx])
         probabilities = clf.predict_proba(x[test_idx])[:, 1]
         predictions = (probabilities >= 0.5).astype(int)
-        rows.append(_score_row(labels[test_idx], predictions, probabilities, model_kind, fold, layer, phase))
+        rows.append(
+            _score_row(labels[test_idx], predictions, probabilities, model_kind, fold, layer, phase)
+        )
     return rows
 
 
@@ -255,7 +338,12 @@ def _cross_validated_text_scores(
     splitter = _splitter(labels, groups, config, seed)
     for fold, (train_idx, test_idx) in enumerate(splitter.split(text_array, labels, groups)):
         clf = make_pipeline(
-            TfidfVectorizer(min_df=2, ngram_range=(1, 2), max_features=20_000),
+            TfidfVectorizer(
+                min_df=2,
+                ngram_range=(1, 2),
+                max_features=20_000,
+                token_pattern=r"(?u)\b\w+\b",
+            ),
             LogisticRegression(
                 C=config.regularization_c,
                 class_weight="balanced",
@@ -266,7 +354,9 @@ def _cross_validated_text_scores(
         clf.fit(text_array[train_idx], labels[train_idx])
         probabilities = clf.predict_proba(text_array[test_idx])[:, 1]
         predictions = (probabilities >= 0.5).astype(int)
-        rows.append(_score_row(labels[test_idx], predictions, probabilities, model_kind, fold, None, None))
+        rows.append(
+            _score_row(labels[test_idx], predictions, probabilities, model_kind, fold, None, None)
+        )
     return rows
 
 
@@ -281,11 +371,11 @@ def _score_row(
 ) -> dict:
     return {
         "model_kind": model_kind,
-        "phase": phase,
-        "layer": layer,
         "fold": fold,
-        "n_test": len(y_true),
+        "layer": layer,
+        "phase": phase,
         "accuracy": accuracy_score(y_true, y_pred),
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
         "auroc": roc_auc_score(y_true, y_prob),
+        "n_test": len(y_true),
     }
