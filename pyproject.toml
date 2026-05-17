@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "latent-intent-probes"
-version = "0.1.0"
-description = "Activation probing experiments for suppressed private objective signals in LLMs."
+version = "0.2.0"
+description = "Counterfactual probing of selected private-goal representations in language models."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -30,6 +30,7 @@ dev = [
 ]
 
 [project.scripts]
+latent-intent = "latent_intent_probe.run:main"
 latent-intent-probes = "latent_intent_probe.run:main"
 
 [tool.setuptools.packages.find]
