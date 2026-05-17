@@ -12,6 +12,7 @@ model:
   max_new_tokens: 32
   attn_implementation: eager
   collect_attentions: true
+  attention_limit: 64
   enable_thinking: false
 
 dataset:
