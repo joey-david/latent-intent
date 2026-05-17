@@ -118,6 +118,7 @@ def collect_phase_readouts_and_generations(
     attention_rows: list[dict] = []
     enriched_records: list[dict] = []
     prompts = [format_chat(tokenizer, record["messages"], config) for record in records]
+    attention_pair_ids = _attention_pair_ids(records, config.attention_limit)
 
     first_device = next(model.parameters()).device
     iterator = range(0, len(records), config.batch_size)
@@ -137,8 +138,8 @@ def collect_phase_readouts_and_generations(
         full_encoded = _encode_with_offsets(tokenizer, full_texts)
         offsets = full_encoded.pop("offset_mapping")
         full_encoded = {key: value.to(first_device) for key, value in full_encoded.items()}
-        collect_batch_attentions = bool(config.collect_attentions) and (
-            config.attention_limit is None or start < config.attention_limit
+        collect_batch_attentions = bool(config.collect_attentions) and any(
+            record["pair_id"] in attention_pair_ids for record in batch_records
         )
 
         with torch.inference_mode():
@@ -204,6 +205,21 @@ def collect_phase_readouts_and_generations(
     write_jsonl(enriched_records, records_path)
     pd.DataFrame(attention_rows, columns=ATTENTION_COLUMNS).to_csv(attention_path, index=False)
     return activations_path, records_path, attention_path
+
+
+def _attention_pair_ids(records: list[dict], record_limit: int | None) -> set[str]:
+    pair_order: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        pair_id = str(record["pair_id"])
+        if pair_id not in seen:
+            seen.add(pair_id)
+            pair_order.append(pair_id)
+
+    if record_limit is None:
+        return set(pair_order)
+    pair_limit = max(0, int(record_limit) // 2)
+    return set(pair_order[:pair_limit])
 
 
 def _responses_for_batch(
