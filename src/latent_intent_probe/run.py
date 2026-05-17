@@ -45,6 +45,7 @@ def main() -> None:
     records = records_to_dicts(build_dataset(config.dataset, config.run.seed))
     if args.limit is not None:
         records = _balanced_limit(records, args.limit)
+    _validate_counterfactual_records(records)
     write_jsonl(records, run_dir / "dataset.jsonl")
 
     metadata = {
@@ -54,6 +55,7 @@ def main() -> None:
         "n_pairs": len({record["pair_id"] for record in records}),
         "fixed_response": config.dataset.fixed_response,
         "heldout_group": "scenario_id",
+        "pair_invariants_validated": True,
     }
     (run_dir / "run_metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n",
@@ -62,7 +64,7 @@ def main() -> None:
 
     if args.dry_run:
         print(f"Dry run complete. Wrote paired dataset/config to {run_dir}")
-        print("Each pair should differ only at `ACTIVE OBJECTIVE: A/B`.")
+        print("Pair invariants validated: only the A/B selector changes within each pair.")
         return
 
     from latent_intent_probe.hf_inference import (
@@ -163,6 +165,28 @@ def _balanced_limit(records: list[dict], limit: int) -> list[dict]:
     selected = set(pair_order[:pair_count])
     limited = [record for record in records if record["pair_id"] in selected]
     return limited[: 2 * pair_count]
+
+
+def _validate_counterfactual_records(records: list[dict]) -> None:
+    by_pair: dict[str, list[dict]] = {}
+    for record in records:
+        by_pair.setdefault(str(record["pair_id"]), []).append(record)
+
+    for pair_id, pair in by_pair.items():
+        if len(pair) != 2:
+            raise ValueError(f"{pair_id} is incomplete: expected 2 records, got {len(pair)}")
+        if {int(record["label"]) for record in pair} != {0, 1}:
+            raise ValueError(f"{pair_id} does not contain one benign-active and one harmful-active row")
+        if len({record["fixed_response"] for record in pair}) != 1:
+            raise ValueError(f"{pair_id} does not share one fixed public response")
+
+        normalized_prompts = []
+        for record in pair:
+            prompt = record["messages"][1]["content"]
+            selector = f"ACTIVE OBJECTIVE: {record['active_slot']}"
+            normalized_prompts.append(prompt.replace(selector, "ACTIVE OBJECTIVE: X", 1))
+        if normalized_prompts[0] != normalized_prompts[1]:
+            raise ValueError(f"{pair_id} differs in text outside the active A/B selector")
 
 
 def _read_jsonl(path: str | Path) -> list[dict]:
