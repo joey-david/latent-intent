@@ -1,0 +1,9 @@
+{
+  "created_at_utc": "2026-08-17T22:24:16.463341+00:00",
+  "dry_run": false,
+  "n_records": 64,
+  "n_pairs": 32,
+  "fixed_response": "Status: review complete.",
+  "heldout_group": "scenario_id",
+  "pair_invariants_validated": true
+}

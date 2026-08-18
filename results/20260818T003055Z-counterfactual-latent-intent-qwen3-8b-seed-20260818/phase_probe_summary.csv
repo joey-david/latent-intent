@@ -1,0 +1,7 @@
+phase,auroc_all_layers_mean,best_layer,best_layer_auroc_mean,best_layer_auroc_std,best_layer_bal_acc_mean,layers_ge_0_90,layers_ge_0_99
+pre_selector,0.5,0,0.5,0.0,0.5,0,0
+post_selector,0.8690405574845679,16,1.0,0.0,1.0,25,23
+public_task_span,0.7970781491126543,21,1.0,0.0,0.9802083333333333,21,13
+final_prompt,0.7733494888117284,19,1.0,0.0,0.9958333333333333,19,18
+response_first,0.791382137345679,31,1.0,0.0,0.9958333333333333,19,17
+response_mean,0.795554530767747,21,1.0,0.0,0.9927083333333334,19,18

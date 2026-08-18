@@ -1,0 +1,5 @@
+model_kind,auroc_mean,auroc_std,bal_acc_mean
+objective_pair_tfidf,0.5,0.0,0.5
+output_tfidf,0.5,0.0,0.5
+prompt_tfidf,0.5,0.0,0.5
+selector_tfidf,0.5,0.0,0.5
