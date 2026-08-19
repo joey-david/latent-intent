@@ -1,0 +1,227 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,booktabs,graphicx,microtype}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\placeholder}[1]{\textcolor{gray}{\textit{#1}}}
+\newcommand{\paperidea}[1]{\item #1}
+
+\title{Counterfactual Goal Binding in Language-Model Hidden States}
+\author{Joey David \and \placeholder{coauthors}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\begin{itemize}
+  \paperidea{Problem: can we identify which of two simultaneously present goals a language model has selected when the goal texts and observable continuation are held fixed?}
+  \paperidea{Counterfactual design: matched prompts differ only in which objective is marked active; harmful-goal placement is balanced; entire objective domains are held out.}
+  \paperidea{Current core result to state compactly after final checks: before the selector, decoding is at chance; after selection, a persistent domain-general linear signal emerges and remains detectable during an identical teacher-forced response.}
+  \paperidea{Causal extension: patch / steer the selected-goal representation and test whether downstream internal state or behavior changes accordingly.}
+  \paperidea{Scope sentence: this studies externally specified goal selection, not autonomous malicious intent or a deception circuit.}
+\end{itemize}
+\end{abstract}
+
+\section{Introduction}
+\begin{itemize}
+  \paperidea{Motivation: reading two goal descriptions is not the same as selecting one of them; many representation studies confound semantic content with active internal state.}
+  \paperidea{Counterfactual question: with candidate goals, public task, and response fixed, does changing only the selected goal create a detectable hidden-state difference?}
+  \paperidea{Why this matters: monitoring internal goal-relevant state could complement output monitoring if signals generalize beyond exact objective wording.}
+  \paperidea{Core methodological idea: a temporal negative control exists naturally because the two conditions are token-identical before the selector.}
+  \paperidea{Potential contribution list: counterfactual goal-binding benchmark/design; phase-by-layer held-out-domain decoding; shared paired direction with exact sign-flip test; causal interventions; cross-model / semantic controls.}
+  \paperidea{Explicitly distinguish: ``selected goal representation'' from ``model has a persistent autonomous goal''.}
+\end{itemize}
+
+\section{Related Work}
+\subsection{Probing and what probes establish}
+\begin{itemize}
+  \paperidea{Linear probing as a measurement tool; include probe-control caveats and selectivity \citep{hewitt2019control}.}
+  \paperidea{Frame held-out objective domains and the pre-selector phase as stronger controls against lexical memorization than random train/test splits.}
+\end{itemize}
+
+\subsection{Latent knowledge and linear representation structure}
+\begin{itemize}
+  \paperidea{Latent knowledge distinct from model output \citep{burns2022latent}.}
+  \paperidea{Population-level / linear representation engineering as relevant precedent for finding and manipulating high-level concepts \citep{zou2023repe}.}
+  \paperidea{Optional additional related-work slot: linear geometry of truth / sentiment / concepts; use only if it helps explain why a shared direction is plausible rather than padding citations.}
+\end{itemize}
+
+\subsection{Activation interventions and causal evidence}
+\begin{itemize}
+  \paperidea{Inference-time activation steering as evidence that linear directions can be behaviorally consequential \citep{li2023iti}.}
+  \paperidea{Causal tracing / activation patching as methodological precedent for moving from decodability to causal effect \citep{meng2022rome}.}
+\end{itemize}
+
+\subsection{Deception, hidden objectives, and safety motivation}
+\begin{itemize}
+  \paperidea{Sleeper Agents as an example where strategically conditioned behavior can persist through training \citep{hubinger2024sleeper}.}
+  \paperidea{Alignment faking as motivation for separating internal objective-related state from observed compliance \citep{greenblatt2024alignment}.}
+  \paperidea{Do not imply our synthetic selector is evidence for either phenomenon; these papers motivate why goal-state observability matters.}
+\end{itemize}
+
+\section{Counterfactual Goal-Selection Setup}
+\subsection{Matched-pair construction}
+\begin{itemize}
+  \paperidea{Each pair contains exactly the same objective A, objective B, public task, and teacher-forced response.}
+  \paperidea{Only the selector differs: ``ACTIVE OBJECTIVE: A'' vs ``ACTIVE OBJECTIVE: B''.}
+  \paperidea{Balance which slot contains the harmful objective within each objective domain.}
+  \paperidea{Current response is fixed (``Status: review complete.'') so output semantics cannot explain the hidden-state difference.}
+\end{itemize}
+
+\subsection{Causal timeline and phases}
+\begin{itemize}
+  \paperidea{Diagram: read A+B $\rightarrow$ pre-selector $\rightarrow$ selector $\rightarrow$ post-selector $\rightarrow$ public task $\rightarrow$ identical response.}
+  \paperidea{Pre-selector phase is the hard negative control: the two forward passes are identical up to that point and should be indistinguishable.}
+  \paperidea{Define exact token/phase aggregation rules once; avoid choosing phases after inspecting results.}
+\end{itemize}
+
+\subsection{Domain generalization}
+\begin{itemize}
+  \paperidea{Hold out complete objective domains, not random examples.}
+  \paperidea{Explain why this tests a shared goal-selection representation rather than pair-specific lexical features.}
+  \paperidea{Report domain counts, pair counts, seed handling, and all split-generation details.}
+\end{itemize}
+
+\section{Measurements and Statistical Tests}
+\subsection{Phase-by-layer linear decoding}
+\begin{itemize}
+  \paperidea{Probe label: which semantic class (e.g. harmful vs benign) is active, not which slot A/B is active.}
+  \paperidea{Held-out-domain AUROC by layer and phase.}
+  \paperidea{Control: pre-selector AUROC must remain at chance; investigate any leakage rather than averaging it away.}
+  \paperidea{Phase-transfer probes: train at one phase, test at another to ask whether the representation persists or changes coordinate system.}
+\end{itemize}
+
+\subsection{Paired counterfactual direction}
+\begin{itemize}
+  \paperidea{For each matched pair compute $\Delta h = h_{\mathrm{harmful\ active}} - h_{\mathrm{benign\ active}}$.}
+  \paperidea{Estimate a shared direction from training domains; evaluate held-out cosine / signed projection on unseen domains.}
+  \paperidea{Use the exact domain-level sign-flip null as a simple, transparent significance test.}
+  \paperidea{Report 128/128-type pairwise sign consistency only alongside domain-held-out statistics to avoid pseudo-replication.}
+\end{itemize}
+
+\subsection{Attention and lexical controls}
+\begin{itemize}
+  \paperidea{Per-head active-vs-inactive objective attention density as descriptive evidence, not causal evidence.}
+  \paperidea{TF--IDF / lexical baselines over prompt, selector, objective pair, and response.}
+  \paperidea{Optional stronger baseline: frozen embedding / bag-of-token nonlinear classifier constrained to the same visible text; expected to fail when counterfactual texts are exactly matched except selector.}
+\end{itemize}
+
+\section{Current Results}
+\begin{itemize}
+  \paperidea{Qwen3-8B, 3 independent seeds, 128 matched pairs, 16 objective domains.}
+  \paperidea{Before selector: AUROC $=0.5$ at every layer in every run.}
+  \paperidea{After selector: held-out-domain decoding reaches AUROC 1.0, including during the identical response.}
+  \paperidea{At response-mean, shared harmful-minus-benign direction has held-out cosine around 0.76--0.78 across seeds, with all matched pairs having the expected sign.}
+  \paperidea{Exact domain-level sign-flip $p=1/65536$ for the shared direction.}
+  \paperidea{Strongest parsed lexical baseline around 0.65--0.67 AUROC.}
+  \paperidea{Main figure: stacked heatmaps for held-out-domain probe AUROC and shared-direction cosine by phase/layer.}
+  \paperidea{Secondary figure: trajectory of signed projection over token position, aligned to the selector.}
+\end{itemize}
+
+\section{Causal Intervention Experiments}
+\subsection{Counterfactual activation patching}
+\begin{itemize}
+  \paperidea{Highest-priority next experiment: patch residual-stream activations from the A-active run into the matched B-active run (and vice versa) at selected phases/layers.}
+  \paperidea{Measure whether later hidden-state projections move toward the donor condition.}
+  \paperidea{If using a task with goal-dependent output, measure whether behavior moves toward the donor objective.}
+  \paperidea{Localize minimum intervention sites: single layer, contiguous layer window, token position, residual stream vs attention/MLP output.}
+  \paperidea{Negative controls: patch pre-selector activations, random matched directions, norm-matched orthogonal directions, unrelated objective pairs.}
+\end{itemize}
+
+\subsection{Direction steering}
+\begin{itemize}
+  \paperidea{Add/subtract the shared selected-goal direction at inference; sweep intervention strength.}
+  \paperidea{Dose-response plot: intervention strength vs downstream projection and, where measurable, goal-consistent behavior.}
+  \paperidea{Cross-domain steering: direction estimated without the target domain.}
+  \paperidea{Specificity: test whether steering changes general valence/refusal rather than selected-goal binding.}
+\end{itemize}
+
+\subsection{Head and module ablations}
+\begin{itemize}
+  \paperidea{Rank heads by active-vs-inactive objective attention preference, then ablate/patch them.}
+  \paperidea{Compare targeted ablation with random-head controls matched for layer/count.}
+  \paperidea{Test whether attention preference predicts causal importance; a dissociation would itself be informative.}
+\end{itemize}
+
+\section{Generalization Experiments}
+\subsection{Non-safety goal pairs}
+\begin{itemize}
+  \paperidea{Very high priority: replace harmful/benign objectives with semantically neutral incompatible goals.}
+  \paperidea{Question: is the shared geometry about goal selection in general, or specifically about safety/valence?}
+  \paperidea{Construct several families (style, information preference, task strategy, persona, optimization target) with balanced labels and held-out domains.}
+  \paperidea{Compare whether a direction transfers across safety and non-safety families or whether separate subspaces emerge.}
+\end{itemize}
+
+\subsection{Model-family and post-training generalization}
+\begin{itemize}
+  \paperidea{Replicate on at least one base model and one instruct model, ideally across two families.}
+  \paperidea{Base vs instruct comparison: does post-training make selected-goal state more linearly organized, less visible, or merely move the layer where it appears?}
+  \paperidea{Scale comparison if compute permits: small/medium variants within one family before broad model zoo.}
+\end{itemize}
+
+\subsection{Selector robustness}
+\begin{itemize}
+  \paperidea{Paraphrase selector syntax (``priority'', ``follow objective'', symbolic index, natural-language instruction).}
+  \paperidea{Move selector location and vary distance between objectives and selector.}
+  \paperidea{Test whether the same direction survives selector wording changes; otherwise separate selector-token effects from goal binding.}
+\end{itemize}
+
+\section{From Explicit Selection to Inferred Intent}
+\begin{itemize}
+  \paperidea{Later extension, not required for first paper: remove the explicit ``ACTIVE OBJECTIVE'' line and make the chosen objective inferable from a neutral context or task condition.}
+  \paperidea{Keep counterfactual matching as strong as possible: same candidate objectives, change only a context feature that rationally selects one.}
+  \paperidea{Ask whether a direction learned in the explicit-selector setting transfers to implicit selection.}
+  \paperidea{This would bridge ``prompt-specified active objective'' toward internally inferred goal state without claiming autonomy.}
+\end{itemize}
+
+\section{Persistence and State Dynamics}
+\begin{itemize}
+  \paperidea{Insert long distractor text after selection; measure decay / transformation of the selected-goal signal with token distance.}
+  \paperidea{Change public task while holding selected objective fixed; test task invariance.}
+  \paperidea{Allow a free response after the controlled teacher-forced segment; ask when internal goal state starts predicting observable divergence.}
+  \paperidea{Re-selection experiment: A selected, then later switch to B; test whether the direction reverses cleanly and how rapidly.}
+  \paperidea{Multiple sequential goals / hierarchy: primary vs secondary objective if the two-goal result is robust.}
+\end{itemize}
+
+\section{Robustness and Failure Modes}
+\begin{itemize}
+  \paperidea{Different probes / regularization; linear probe should remain the main interpretable measurement.}
+  \paperidea{Leave-one-domain-out and leave-one-objective-pair-family-out analyses.}
+  \paperidea{Permutation / sign-flip tests at the independent-domain level.}
+  \paperidea{Selector-only baseline and objective-slot baseline.}
+  \paperidea{Check whether representation is dominated by refusal/harmfulness valence rather than binding; non-safety controls are decisive here.}
+  \paperidea{Test direction stability across seeds using cosine / subspace alignment.}
+\end{itemize}
+
+\section{Discussion}
+\begin{itemize}
+  \paperidea{Interpretation if causal interventions work: selected objective is not merely decodable but participates in downstream computation.}
+  \paperidea{Interpretation if probes generalize but steering fails: representation may be correlated/readout-accessible without being a useful causal control variable.}
+  \paperidea{Interpretation if neutral goals yield analogous geometry: evidence for a generic goal-binding mechanism rather than safety valence.}
+  \paperidea{Monitoring angle: counterfactual representation tests can reveal internal condition differences even when output is deliberately held constant.}
+  \paperidea{Avoid leap from controlled representation to real-world deceptive intent detection.}
+\end{itemize}
+
+\section{Limitations and Scope}
+\begin{itemize}
+  \paperidea{The active objective is supplied externally; no evidence of self-generated goals.}
+  \paperidea{Synthetic harmful/benign objective domains may not capture realistic long-horizon motivations.}
+  \paperidea{Linear decodability is not sufficient for causal or mechanistic claims.}
+  \paperidea{Teacher forcing deliberately removes output confounds but also creates an artificial setting.}
+  \paperidea{Qwen3-8B-only result until cross-family replications are complete.}
+\end{itemize}
+
+\section{Conclusion}
+\begin{itemize}
+  \paperidea{Core claim slot: selecting one of two simultaneously present objectives creates a temporally localized, persistent, domain-general hidden-state difference under matched observable text.}
+  \paperidea{Causal/generalization claim slot to fill only after interventions and neutral-goal replications.}
+\end{itemize}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
